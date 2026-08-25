@@ -1,0 +1,6 @@
+# dsh-voice-input profile patch layer — register the plugin with the harness.
+# The browser half is picked up by dsh-client-modules through the package's
+# dsh.client declaration; the host half mounts the /voice-input routes.
+- insert:
+    - id: voice-input
+      name: 'dsh-voice-input'

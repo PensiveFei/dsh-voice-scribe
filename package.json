@@ -1,0 +1,60 @@
+{
+  "name": "dsh-voice-input",
+  "version": "0.1.0",
+  "description": "DSH 专属语音输入插件：点按 Alt 说话、松开转文字。转写走可配置 ASR（默认 Groq Whisper 免费），润色复用 DSH 已配置模型（可选）。Voice input for DeepSeek Harness: tap Alt to talk, get text in the composer.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "docs",
+    "tests"
+  ],
+  "scripts": {
+    "test": "node tests/run-tests.cjs",
+    "lint": "node scripts/lint.cjs",
+    "validate": "node tests/run-tests.cjs && node scripts/lint.cjs && node scripts/security-check.cjs",
+    "security": "node scripts/security-check.cjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh",
+    "voice",
+    "speech-to-text",
+    "asr",
+    "whisper",
+    "voice-input"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PensiveFei/dsh-voice-input.git"
+  }
+}
