@@ -134,6 +134,34 @@ test('client: settings row re-renders on change (useState bump)', () => {
   assert.ok(clientSrc.includes('bump()'));
 });
 
+test('client: web-speech error is not swallowed by onend', () => {
+  // onerror records wsError; onend must return early instead of calling
+  // finishWebSpeech (which would show "未识别到文字" over the real cause).
+  assert.ok(clientSrc.includes('wsError = event.error || "unknown"'));
+  assert.ok(clientSrc.includes('if (wsError !== null) {'));
+  assert.ok(clientSrc.includes('wsError = null;'));
+  assert.ok(clientSrc.includes('wsError = null;'));
+  assert.ok(/onerror = \(event\) => \{[\s\S]*?wsError/.test(clientSrc));
+});
+
+test('client: hostCall has a timeout (no infinite "转写中")', () => {
+  assert.ok(clientSrc.includes('HOST_CALL_TIMEOUT_MS'));
+  assert.ok(clientSrc.includes('new AbortController()'));
+  assert.ok(clientSrc.includes('signal: controller.signal'));
+  assert.ok(clientSrc.includes('"host-timeout"'));
+});
+
+test('client: transcribe surfaces the host error message', () => {
+  // Caller needs asr-key-missing / asr-timeout / 401 details, not a boolean.
+  assert.ok(clientSrc.includes('return { ok: false, error: msg }'));
+  assert.ok(clientSrc.includes('result.error'));
+});
+
+test('client: MediaRecorder failure releases the microphone stream', () => {
+  assert.ok(clientSrc.includes('stream.getTracks().forEach((track) => track.stop());'));
+  assert.ok(clientSrc.includes('new MediaRecorder(stream'));
+});
+
 test('client: cloud-ASR config block appears when engine = cloud-asr', () => {
   assert.ok(clientSrc.includes('function TextRow'));
   assert.ok(clientSrc.includes('engine === "cloud-asr"'));
