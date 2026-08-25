@@ -15,7 +15,7 @@ const path = require('path');
 const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'index.js'), 'utf8');
 
 test('host: exports name and inject', () => {
-  assert.ok(/export const name = "dsh-voice-input"/.test(src));
+  assert.ok(/export const name = "dsh-voice-scribe"/.test(src));
   assert.ok(/export const inject = \["webServer", "webRuntime", "llm"\]/.test(src));
 });
 
@@ -52,9 +52,9 @@ test('host: trust fence blocks cross-site', () => {
 // ---------- client-side: hotkey matcher (pure logic extracted) ----------
 const clientSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'client.js'), 'utf8');
 
-test('client: loads via ModuleLoader', () => {
+test('client: loads via ModuleLoader with the registered id', () => {
   assert.ok(clientSrc.includes('window.__ModuleLoader__.load'));
-  assert.ok(clientSrc.includes('id: "dsh-voice-input"'));
+  assert.ok(clientSrc.includes('id: "dsh-voice-scribe"'));
 });
 
 test('client: supports alt and alt-space hotkeys', () => {
@@ -94,10 +94,55 @@ test('client: finds composer textarea via data-composer-card', () => {
   assert.ok(clientSrc.includes('[data-composer-card="true"]'));
 });
 
-test('client: audio never logged; key never in browser', () => {
-  // The browser only ever sends { audio, mimeType, language } to the host.
-  assert.ok(!/localStorage[\s\S]{0,80}asrApiKey/.test(clientSrc) || true);
-  assert.ok(!clientSrc.includes('asrApiKey'));
+test('client: API key never stored in localStorage or logged', () => {
+  // The key may be typed in the settings UI and sent to the host for storage
+  // (host-side ~/.dsh/voice-input.json), but it must never be persisted in
+  // localStorage nor appear in any status/log string.
+  assert.ok(!/localStorage[\s\S]{0,80}asrApiKey/.test(clientSrc), 'asrApiKey must not be written to localStorage');
+  assert.ok(!clientSrc.includes('console.log') || !/console\.log\([^)]*key/i.test(clientSrc));
+  assert.ok(!/setStatus\([^)]*key/i.test(clientSrc), 'key must not appear in status messages');
+  // The key only flows to the host via saveSettings({ asrApiKey }) — fine.
+  assert.ok(clientSrc.includes('patch.asrApiKey = cloudKey.trim()') || clientSrc.includes('asrApiKey: cloudKey.trim()'));
+});
+
+test('client: registers a settings section (engine/language/hotkey/polish)', () => {
+  assert.ok(clientSrc.includes('ctx.slots.inject("settings.section"'));
+  assert.ok(clientSrc.includes('settings.voiceScribe.item'));
+  assert.ok(clientSrc.includes('VoiceScribeRow'));
+  assert.ok(clientSrc.includes('ctx.locale.register'));
+  assert.ok(clientSrc.includes('inject = ["slots", "locale"]'));
+  assert.ok(clientSrc.includes('writeJson(ENGINE_KEY'));
+  assert.ok(clientSrc.includes('writeJson(LANGUAGE_KEY'));
+  assert.ok(clientSrc.includes('writeJson(HOTKEY_KEY'));
+  assert.ok(clientSrc.includes('writeJson(POLISH_KEY'));
+});
+
+test('client: locale dictionary is nested per-language (zh/en)', () => {
+  // DSH's locale service expects { zh: {...}, en: {...} }, not a flat map —
+  // a flat map makes t(key) return the key itself (English-looking labels).
+  assert.ok(clientSrc.includes('zh: {'));
+  assert.ok(clientSrc.includes('en: {'));
+  assert.ok(clientSrc.includes('"engine.title": "识别引擎"'));
+  assert.ok(clientSrc.includes('"engine.title": "Recognition engine"'));
+});
+
+test('client: settings row re-renders on change (useState bump)', () => {
+  // Writing localStorage alone does not re-render the row; a useState tick
+  // makes each select visibly update immediately after a change.
+  assert.ok(clientSrc.includes('_react.useState(0)'));
+  assert.ok(clientSrc.includes('forceRender'));
+  assert.ok(clientSrc.includes('bump()'));
+});
+
+test('client: cloud-ASR config block appears when engine = cloud-asr', () => {
+  assert.ok(clientSrc.includes('function TextRow'));
+  assert.ok(clientSrc.includes('engine === "cloud-asr"'));
+  assert.ok(clientSrc.includes('saveCloud'));
+  assert.ok(clientSrc.includes('setCloudUrl'));
+  assert.ok(clientSrc.includes('cloud.keySet'));
+  assert.ok(clientSrc.includes('type: "password"'));
+  // The key field is a password input; URL/model are text.
+  assert.ok(clientSrc.includes('saveSettings(patch)'));
 });
 
 // ---------- docs: disclaimer present ----------
