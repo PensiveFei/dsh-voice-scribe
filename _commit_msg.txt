@@ -1,7 +1,0 @@
-fix: 4 real bugs found in code review (error swallowing, no timeout, lost errors, mic leak)
-
-- Web Speech: onerror now records wsError; onend returns early on failure so the real cause (permission/network/other) is not overwritten by "未识别到文字"
-- hostCall: added AbortController timeout (75s) — no more infinite "转写中" when the host hangs
-- transcribe: returns { ok, text?, error? } so the caller shows the host error message (asr-key-missing, asr-timeout, 401...) instead of a generic "check config"
-- startRecording: MediaRecorder construction failure now stops the microphone stream — no leaked mic indicator
-- Tests 19 -> 23 (4 new assertions), lint + security clean
