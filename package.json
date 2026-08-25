@@ -1,5 +1,5 @@
 {
-  "name": "dsh-voice-input",
+  "name": "dsh-voice-scribe",
   "version": "0.1.0",
   "description": "DSH 专属语音输入插件：点按 Alt 说话、松开转文字。转写走可配置 ASR（默认 Groq Whisper 免费），润色复用 DSH 已配置模型（可选）。Voice input for DeepSeek Harness: tap Alt to talk, get text in the composer.",
   "license": "MIT",
@@ -55,6 +55,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/PensiveFei/dsh-voice-input.git"
+    "url": "git+https://github.com/PensiveFei/dsh-voice-scribe.git"
   }
 }

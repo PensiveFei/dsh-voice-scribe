@@ -1,4 +1,4 @@
-# dsh-voice-input
+# dsh-voice-scribe
 
 DSH 专属语音输入插件：**点按 Alt 说话、再点按结束转文字**，文本直接插入输入框光标处。
 Voice input for DeepSeek Harness: tap **Alt** to start recording, tap again to stop — the transcript lands in the composer.
@@ -27,7 +27,7 @@ DSH 用户大多只有 DeepSeek 原生 API key，而 DeepSeek 模型是**纯文�
 # 打包
 pnpm pack
 # 安装到你的 DSH web profile
-dsh plugin --profile web add ./dsh-voice-input-0.1.0.tgz
+dsh plugin --profile web add ./dsh-voice-scribe-0.1.0.tgz
 # 重启 dsh web 后刷新页面
 ```
 
