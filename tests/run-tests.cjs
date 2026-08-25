@@ -157,6 +157,21 @@ test('client: transcribe surfaces the host error message', () => {
   assert.ok(clientSrc.includes('result.error'));
 });
 
+test('client: interim results enabled + interim fallback on stop', () => {
+  // continuous:true with interimResults:false makes Chrome/Edge drop
+  // un-finalized speech on stop() -> empty transcript. interim must be on
+  // and finishWebSpeech must fall back to the last interim hypothesis.
+  assert.ok(clientSrc.includes('recognition.interimResults = true'));
+  assert.ok(clientSrc.includes('wsLastInterim'));
+  assert.ok(clientSrc.includes('text = (wsLastInterim || "").trim()'));
+});
+
+test('client: stop shows immediate processing feedback', () => {
+  // The user taps Alt again to stop; the status pill must switch to
+  // "处理中" right away instead of staying on "录音中".
+  assert.ok(clientSrc.includes('setStatus("⏳ 处理中…", true)'));
+});
+
 test('client: MediaRecorder failure releases the microphone stream', () => {
   assert.ok(clientSrc.includes('stream.getTracks().forEach((track) => track.stop());'));
   assert.ok(clientSrc.includes('new MediaRecorder(stream'));
