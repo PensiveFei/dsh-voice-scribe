@@ -1,7 +1,7 @@
 {
   "name": "dsh-voice-scribe",
-  "version": "0.1.0",
-  "description": "DSH 专属语音输入插件：点按 Alt 说话、松开转文字。转写走可配置 ASR（默认 Groq Whisper 免费），润色复用 DSH 已配置模型（可选）。Voice input for DeepSeek Harness: tap Alt to talk, get text in the composer.",
+  "version": "0.1.1",
+  "description": "DSH 专属语音输入插件：点按 Alt 说话、再点按转文字。默认浏览器内置 Web Speech（零配置零 key），可选云端 ASR 与润色（复用 DSH 模型）。Voice input for DeepSeek Harness: tap Alt to talk, get text in the composer.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -35,7 +35,8 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-locale"
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots"
       ]
     }
   },
