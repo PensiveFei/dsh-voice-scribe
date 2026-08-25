@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.1] — 2026-08-25
+
+### Added
+
+- **设置页 UI**（设置 → 语音输入 / Voice Input）：识别引擎、语言、热键、润色开关，中文/英文双语
+- **云端 ASR 配置界面**：切换到云端引擎后显示 Base URL / 模型 / API Key 输入 + 保存按钮（key 只存服务端）
+
+### Fixed
+
+- 设置页显示英文：locale 字典改为按语言嵌套（`{ zh, en }`），label 硬编码中文
+- 点击设置选项无反应：设置行加 `useState` tick，变更后立即重渲染
+- 客户端注册 id 从 `dsh-voice-input` 改为 `dsh-voice-scribe`（浏览器加载报 "loaded without registering" 的根因）
+- 插件自带 cordis.patch.yml 与 tgz 同步为 `dsh-voice-scribe`（避免重装带回旧名）
+- 服务端 `name` 从 `dsh-voice-input` 改为 `dsh-voice-scribe`
+
 ## [0.1.0] — 2026-08-25
 
 ### Added
