@@ -308,12 +308,14 @@ test('repo: package.json files entries all exist', () => {
   }
 });
 
-// ---------- docs: disclaimer present ----------
+// ---------- docs: unofficial note + SECURITY pointer ----------
 const readme = fs.existsSync(path.join(ROOT, 'README.md'))
   ? fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')
   : '';
-test('docs: README has disclaimer', () => {
-  assert.ok(readme.includes('免责声明') || readme.includes('disclaimer'), 'README should carry a disclaimer');
+test('docs: README marks unofficial and points to SECURITY.md', () => {
+  assert.ok(readme.includes('非官方'), 'README should mark the plugin as unofficial');
+  assert.ok(readme.includes('SECURITY.md'), 'README should point to SECURITY.md');
+  assert.ok(readme.includes('自动（默认）'), 'README should state the auto default engine');
 });
 
 // ---------- REAL behavioural tests for lib/host-utils.js ----------

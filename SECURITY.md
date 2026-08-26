@@ -9,7 +9,7 @@
 ### API Key 边界
 - ASR API key **只存服务端**：`$DSH_HOME/voice-input.json`（默认 `~/.dsh/voice-input.json`），文件权限 owner-only（POSIX 0600）
 - 浏览器页面 JS **永远拿不到** API key：`get-settings` 只返回 `hasKey` 布尔值
-- 转写音频只经浏览器 → 本地 host → ASR 服务一条链路，不写日志、不落盘
+- 转写链路分模式：**本地离线识别（默认）音频完全不出本机**；云端 ASR 模式仅经浏览器 → 本地 host → ASR 服务，不写日志、不落盘；Web Speech 模式由浏览器语音服务处理
 
 ### 路由护栏
 - `/voice-input` 路由只接受回环地址（loopback）或配置的 trustedHosts 来源
@@ -22,5 +22,7 @@
 
 ## 已知边界
 
-- 语音内容会发送给你配置的第三方 ASR 服务商（默认 Groq）——这是语音转文字的本质，无法避免
+- **默认本地离线识别**：音频不出本机，不依赖任何第三方服务；模型从 hf-mirror.com / huggingface.co 下载（约 230MB），首次使用本地引擎时自动获取
+- **云端 ASR（可选）**：若切换到云端引擎，语音会发送给你配置的第三方 ASR 服务商——这是云端转写的本质
+- **浏览器 Web Speech（可选）**：语音由浏览器厂商（Google/Microsoft）的语音服务处理，可能离开本机
 - 麦克风权限由浏览器强制，页面需在安全上下文（localhost / HTTPS）下
