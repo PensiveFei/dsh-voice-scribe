@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice-scribe",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "DSH 专属语音输入插件：点按 Alt 说话、再点按转文字。默认浏览器内置 Web Speech（零配置零 key），可选云端 ASR 与润色（复用 DSH 模型）。Voice input for DeepSeek Harness: tap Alt to talk, get text in the composer.",
   "license": "MIT",
   "type": "module",
@@ -19,6 +19,9 @@
     "CONTRIBUTING.md",
     "tests"
   ],
+  "dependencies": {
+    "sherpa-onnx-node": "^1.13.5"
+  },
   "scripts": {
     "test": "node tests/run-tests.cjs",
     "lint": "node scripts/lint.cjs",

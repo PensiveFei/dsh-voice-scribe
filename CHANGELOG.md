@@ -3,7 +3,25 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] — 2026-08-27
+
+### Added
+
+- **本地离线识别引擎（SenseVoice via sherpa-onnx）**：真正零配置、零 API key、音频不出本机——不受浏览器 Web Speech 回归（Edge Stable）、Google 被墙、离线环境影响
+- **引擎「自动（auto）」模式（默认）**：本地模型就绪时优先本地；未就绪时先用浏览器 Web Speech；Web Speech 报网络错误时**自动切换本地**并自动下载模型，再按一次 Alt 即可
+- 模型**首次使用自动后台下载**（约 230MB，带进度提示），从国内可达镜像（hf-mirror.com / huggingface.co）下载，`$DSH_HOME/voice/sensevoice` 落盘，可复用；失败自动回退下一镜像
+- 设置页新增「本地离线识别」引擎选项与本地模型状态行（就绪 / 下载中 % / 未下载）
+- 浏览器端把录音解码为 16kHz 单声道 PCM 直传 host（AudioContext.decodeAudioData + 线性重采样），host 端 sherpa-onnx 直接推理，无需 ffmpeg/转码
+- SenseVoice 输出清洗：剥离 `<|zh|><|NEUTRAL|>` 等元数据标记，保留自动标点
+
+### Changed
+
+- 默认引擎从 `web-speech` 改为 `auto`（行为更稳，配置仍为零）
+- 新增依赖 `sherpa-onnx-node`（预编译，win/mac/linux）
+- Web Speech 网络错误提示改为指引「本地离线识别 / 云端 ASR」
+
 ## [0.1.2] — 2026-08-26
+
 
 ### Fixed
 

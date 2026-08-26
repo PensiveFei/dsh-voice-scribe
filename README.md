@@ -11,9 +11,16 @@ Voice input for DeepSeek Harness: tap **Alt** to start recording, tap again to s
 ## 功能 Features
 
 - 🎙️ **点按 Alt 切换录音**（默认）；若浏览器拦截 Alt，可切换为 **Alt+空格**（设置中可选）
-- 🎧 **转写**：默认用浏览器内置 Web Speech 识别（Chrome/Edge 自带，**零配置、零 API key**）；可选 OpenAI 兼容 ASR 端点
+- 🧠 **默认引擎「自动」**：本地离线识别（SenseVoice，零配置零 key、音频不出本机）优先；浏览器 Web Speech 不可用时**自动切换本地**并自动下载模型——开箱即用，无需任何配置
+- 🎧 **可选引擎**：浏览器内置 Web Speech（零配置）；云端 ASR（OpenAI 兼容，需 key，高级选项）
 - ✨ **可选润色**：默认关闭；开启后转写文本通过 **DSH 已配置的模型** 清理口头禅、补标点——**无需额外配置 API key**
-- 🔒 **隐私设计**：默认 Web Speech 模式音频不出浏览器；ASR API key（如启用云端引擎）只存服务端，浏览器端不可见
+- 🔒 **隐私设计**：本地引擎音频完全不出本机；云端模式 API key 只存服务端，浏览器端不可见
+
+## 本地离线识别（Local offline，默认）
+
+- 引擎：**SenseVoice**（sherpa-onnx，CPU 推理），支持中文自动标点、中/英/日/韩/粤
+- **零配置、零 API key**：首次使用时自动在后台下载模型（约 230MB，国内镜像，只需一次），之后完全离线
+- 不依赖浏览器语音服务 → 不受 Chrome 被墙、Edge Stable 回归、离线环境影响
 
 ## 为什么默认用浏览器内置识别（Web Speech）
 
@@ -73,7 +80,7 @@ dsh plugin --profile web add ./dsh-voice-scribe-0.1.2.tgz
 
 ## 已知限制与排错 Troubleshooting
 
-- **Web Speech 依赖外部语音服务**：**Edge** 的内置识别走 **Microsoft** 服务（国内可用）；**Chrome** 走 **Google** 服务（国内不可达）。若提示「浏览器语音识别不可用」：① 完全退出代理/VPN 应用（不只是断开开关，避免残留网络过滤）后重试；② Chrome 用户建议改用 Edge；③ 或到 **设置 → 语音输入** 切换为「云端 ASR」。
+- **Web Speech 依赖外部语音服务**：**Edge** 的内置识别走 **Microsoft** 服务（国内可用）；**Chrome** 走 **Google** 服务（国内不可达）；Edge Stable 曾有已知回归。若提示「浏览器语音识别不可用」：**默认「自动」引擎会自动切换到本地离线识别**（SenseVoice，零 key、不出本机），无需任何手动配置。
 - **云端 ASR（推荐替代）**：任意 OpenAI 兼容 `/v1/audio/transcriptions` 端点。国内直连可用的免费示例：**硅基流动**（Base URL `https://api.siliconflow.cn/v1/audio/transcriptions`，模型 `FunAudioLLM/SenseVoiceSmall`）。云端转写由本地 DSH host 转发（Node 直连，不走浏览器代理，不受浏览器网络限制影响）。
 - **麦克风权限**：首次使用需在浏览器地址栏授权（DSH 默认 127.0.0.1 属安全上下文，支持）。若提示权限被拒，检查地址栏麦克风图标。
 

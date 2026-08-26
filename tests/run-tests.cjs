@@ -32,12 +32,16 @@ test('host: exports name and inject', () => {
   assert.ok(/export const inject = \["webServer", "webRuntime", "llm"\]/.test(src));
 });
 
-test('host: has transcribe/polish/list-models actions', () => {
+test('host: has transcribe/polish/list-models/local actions', () => {
   assert.ok(src.includes('action === "transcribe"'));
   assert.ok(src.includes('action === "polish"'));
   assert.ok(src.includes('action === "list-models"'));
   assert.ok(src.includes('action === "get-settings"'));
   assert.ok(src.includes('action === "set-settings"'));
+  assert.ok(src.includes('action === "local-status"'));
+  assert.ok(src.includes('action === "local-download"'));
+  assert.ok(src.includes('action === "local-transcribe"'));
+  assert.ok(src.includes('from "./local-asr.js"'));
 });
 
 test('host: get-settings never exposes the key', () => {
@@ -181,9 +185,8 @@ test('client: web-speech network error guides the user to cloud ASR', () => {
   // A bare "需联网" leaves users stuck on mainland-China networks where the
   // Google/Microsoft speech backend is blocked — the message must say how to
   // switch engines.
-  assert.ok(clientSrc.includes('切换「云端 ASR」'));
-  assert.ok(clientSrc.includes('完全退出代理/VPN'));
-  assert.ok(/event\.error === "network"[\s\S]{0,600}切换「云端 ASR」/.test(clientSrc));
+  assert.ok(clientSrc.includes('切换「本地离线识别」或「云端 ASR」'));
+  assert.ok(/event\.error === "network"[\s\S]{0,600}切换「本地离线识别」/.test(clientSrc));
   assert.ok(clientSrc.includes('warn.wsChrome'), 'Chrome users need a settings hint (Google is blocked in CN; Edge uses Microsoft)');
 });
 
@@ -257,6 +260,23 @@ test('client: host language default syncs into localStorage when unset', () => {
   assert.ok(clientSrc.includes('writeJson(LANGUAGE_KEY, value.language)'));
 });
 
+test('client: auto engine routes local-first and falls back from Web Speech', () => {
+  assert.ok(clientSrc.includes('readJson(ENGINE_KEY, "auto")'));
+  assert.ok(clientSrc.includes('function effectiveEngine()'));
+  assert.ok(clientSrc.includes('localReady ? "local" : "web-speech"'));
+  assert.ok(clientSrc.includes('void autoFallbackToLocal()'));
+  assert.ok(clientSrc.includes('event.error === "network"'));
+});
+
+test('client: local engine decodes PCM in-browser and posts to host', () => {
+  assert.ok(clientSrc.includes('function blobToPcm16k'));
+  assert.ok(clientSrc.includes('decodeAudioData'));
+  assert.ok(clientSrc.includes('function f32ToBase64'));
+  assert.ok(clientSrc.includes('action: "local-transcribe"'));
+  assert.ok(clientSrc.includes('action: "local-status"'));
+  assert.ok(clientSrc.includes('action: "local-download"'));
+});
+
 // ---------- repo-level consistency ----------
 test('repo: cordis.patch.yml name matches plugin name', () => {
   const patch = fs.readFileSync(path.join(ROOT, 'cordis.patch.yml'), 'utf8');
@@ -267,7 +287,7 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.1.2', 'version should be 0.1.2, got ' + pkg.version);
+  assert.ok(pkg.version === '0.2.0', 'version should be 0.2.0, got ' + pkg.version);
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
@@ -639,6 +659,65 @@ async function behavioural() {
     const { res } = await post(host, { action: 'list-models' }, ctx);
     assert.strictEqual(res._state.status, 200);
     assert.deepStrictEqual(JSON.parse(res._state.body).value, []);
+  });
+
+  await testAsync('host: handleApi local-status reports model not ready without a model', async () => {
+    // Uses the real default modelDir() — which has no model in CI — and must
+    // still answer 200 with a clean shape (never 500).
+    const { res } = await post(host, { action: 'local-status' });
+    assert.strictEqual(res._state.status, 200);
+    const body = JSON.parse(res._state.body);
+    assert.strictEqual(body.ok, true);
+    assert.ok(typeof body.value.modelReady === 'boolean');
+    assert.ok(typeof body.value.downloading === 'boolean');
+  });
+
+  // ---- REAL behavioural tests for lib/local-asr.js (pure, no model needed) ----
+  const local = await import(pathToFileURL(path.join(ROOT, 'lib', 'local-asr.js')).href);
+
+  test('local-asr: cleanupSenseVoiceText strips metadata tokens', () => {
+    assert.strictEqual(local.cleanupSenseVoiceText('<|zh|><|NEUTRAL|><|Speech|><|withitn|>你好世界'), '你好世界');
+    assert.strictEqual(local.cleanupSenseVoiceText('<|en|><|HAPPY|>Hello world'), 'Hello world');
+    assert.strictEqual(local.cleanupSenseVoiceText('  无标记文本  '), '无标记文本');
+    assert.strictEqual(local.cleanupSenseVoiceText(null), '');
+    assert.strictEqual(local.cleanupSenseVoiceText(undefined), '');
+  });
+
+  test('local-asr: base64ToFloat32 roundtrips little-endian f32 PCM', () => {
+    const src = new Float32Array([0.0, -1.0, 1.0, 0.5, -0.5, 3.14]);
+    const b64 = Buffer.from(src.buffer, src.byteOffset, src.byteLength).toString('base64');
+    const out = local.base64ToFloat32(b64);
+    assert.strictEqual(out.length, src.length);
+    for (let i = 0; i < src.length; i++) assert.ok(Math.abs(out[i] - src[i]) < 1e-6);
+    assert.strictEqual(local.base64ToFloat32('').length, 0);
+    assert.strictEqual(local.base64ToFloat32(null).length, 0);
+    // trailing partial sample (3 bytes) is truncated, not crashed
+    assert.strictEqual(local.base64ToFloat32(Buffer.from([1, 2, 3]).toString('base64')).length, 0);
+  });
+
+  test('local-asr: modelDir honours DSH_HOME', () => {
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = 'C:/fake-home';
+    try {
+      const dir = local.modelDir();
+      // path.join uses the platform separator — check both forms.
+      assert.ok(dir.startsWith('C:/fake-home') || dir.startsWith('C:\\fake-home'), 'should be under DSH_HOME: ' + dir);
+      assert.ok(/voice[\\/]sensevoice$/.test(dir), 'should end with voice/sensevoice: ' + dir);
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+    }
+  });
+
+  test('local-asr: getDownloadState returns a clean shape', () => {
+    const s = local.getDownloadState();
+    assert.strictEqual(typeof s.running, 'boolean');
+    assert.strictEqual(typeof s.error, 'string');
+    assert.strictEqual(typeof s.progress.file, 'string');
+    assert.strictEqual(typeof s.progress.done, 'number');
+  });
+
+  test('local-asr: disposeRecognizer is safe to call', () => {
+    local.disposeRecognizer();
   });
 }
 
