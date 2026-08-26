@@ -260,6 +260,12 @@ test('client: host language default syncs into localStorage when unset', () => {
   assert.ok(clientSrc.includes('writeJson(LANGUAGE_KEY, value.language)'));
 });
 
+test('client: pre-0.2.0 persisted "web-speech" migrates to the auto default', () => {
+  assert.ok(clientSrc.includes('ENGINE_MIGRATED_KEY'));
+  assert.ok(clientSrc.includes('writeJson(ENGINE_KEY, "auto")'));
+  assert.ok(clientSrc.includes('engine-migrated-v2'));
+});
+
 test('client: auto engine routes local-first and falls back from Web Speech', () => {
   assert.ok(clientSrc.includes('readJson(ENGINE_KEY, "auto")'));
   assert.ok(clientSrc.includes('function effectiveEngine()'));
