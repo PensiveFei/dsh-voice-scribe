@@ -73,7 +73,7 @@ dsh plugin --profile web add ./dsh-voice-scribe-0.1.2.tgz
 
 ## 已知限制与排错 Troubleshooting
 
-- **Web Speech 依赖外部语音服务**：浏览器内置识别（Chrome/Edge）会把音频发送给 **Google / Microsoft 的语音服务**。在部分网络（如中国大陆）这些服务不可达，会提示「浏览器语音识别不可用」。解法：到 **设置 → 语音输入** 切换为「云端 ASR」。
+- **Web Speech 依赖外部语音服务**：**Edge** 的内置识别走 **Microsoft** 服务（国内可用）；**Chrome** 走 **Google** 服务（国内不可达）。若提示「浏览器语音识别不可用」：① 完全退出代理/VPN 应用（不只是断开开关，避免残留网络过滤）后重试；② Chrome 用户建议改用 Edge；③ 或到 **设置 → 语音输入** 切换为「云端 ASR」。
 - **云端 ASR（推荐替代）**：任意 OpenAI 兼容 `/v1/audio/transcriptions` 端点。国内直连可用的免费示例：**硅基流动**（Base URL `https://api.siliconflow.cn/v1/audio/transcriptions`，模型 `FunAudioLLM/SenseVoiceSmall`）。云端转写由本地 DSH host 转发（Node 直连，不走浏览器代理，不受浏览器网络限制影响）。
 - **麦克风权限**：首次使用需在浏览器地址栏授权（DSH 默认 127.0.0.1 属安全上下文，支持）。若提示权限被拒，检查地址栏麦克风图标。
 
