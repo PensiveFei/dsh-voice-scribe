@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - 纯逻辑（设置读写、信任围栏、请求体读取、ASR 调用、语言码归一化）抽到 `lib/host-utils.js`（零依赖），离线测试改为**真实行为测试**（413 路径、语言码、ASR 错误映射、设置回写等），不再只做源码正则匹配
+- `@deepseek-ai/dsh-llm` 改为 **polishText 内懒加载**（首次润色时才 import，Node 缓存其后零开销），`lib/index.js` 不再有顶层外部依赖——离线测试可直接导入它，新增 `polishText` / `handleApi` 行为测试（405/415/400/404/413、设置读写、转写缺 key、润色回退等）
 
 ## [0.1.1] — 2026-08-25
 
