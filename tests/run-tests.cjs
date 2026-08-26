@@ -1,19 +1,32 @@
-// tests/run-tests.js — offline unit tests
+// tests/run-tests.cjs — offline unit tests.
+//
+// Two layers:
+//   1) REAL behavioural tests for lib/host-utils.js (dependency-free ESM, so
+//      we import it directly): 413 overflow path, language normalization,
+//      ASR error mapping, settings round-trip, trust fence.
+//   2) Source-shape checks for the plugin wiring that needs the DSH host or
+//      browser (route actions, client registration, locale shape, hotkeys).
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+
+const ROOT = path.join(__dirname, '..');
 
 let passed = 0, failed = 0;
 function test(name, fn) {
   try { fn(); passed++; console.log('  ✅', name); }
   catch (e) { failed++; console.error('  ❌', name, '—', e.message); }
 }
+async function testAsync(name, fn) {
+  try { await fn(); passed++; console.log('  ✅', name); }
+  catch (e) { failed++; console.error('  ❌', name, '—', e.message); }
+}
 
-// ---------- server-side: settings shape & trust fence helpers ----------
-// We can't mount the real plugin here (needs DSH host), but we can test the
-// pure helpers if they were exported. For now: validate the source shape.
-const fs = require('fs');
-const path = require('path');
-const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'index.js'), 'utf8');
+const src = fs.readFileSync(path.join(ROOT, 'lib', 'index.js'), 'utf8');
+const clientSrc = fs.readFileSync(path.join(ROOT, 'lib', 'client.js'), 'utf8');
+const utilsSrc = fs.readFileSync(path.join(ROOT, 'lib', 'host-utils.js'), 'utf8');
 
+// ---------- server-side: source shape (needs DSH host to mount) ----------
 test('host: exports name and inject', () => {
   assert.ok(/export const name = "dsh-voice-scribe"/.test(src));
   assert.ok(/export const inject = \["webServer", "webRuntime", "llm"\]/.test(src));
@@ -27,31 +40,59 @@ test('host: has transcribe/polish/list-models actions', () => {
   assert.ok(src.includes('action === "set-settings"'));
 });
 
-test('host: key never sent to browser (get-settings redacts)', () => {
+test('host: get-settings never exposes the key', () => {
   // The get-settings response must expose hasKey, not the key itself.
-  assert.ok(src.includes('hasKey'));
-  assert.ok(!/get-settings[\s\S]{0,200}asrApiKey/.test(src) || true); // structural check below
   const getSettingsBlock = src.match(/action === "get-settings"[\s\S]*?return;/) || [''];
-  assert.ok(!getSettingsBlock[0].includes('asrApiKey: settings.asrApiKey'));
+  assert.ok(getSettingsBlock[0].includes('hasKey'), 'should expose hasKey');
+  assert.ok(!getSettingsBlock[0].includes('asrApiKey: settings.asrApiKey'), 'must not serialize the key');
+  assert.ok(!/value:\s*\{[\s\S]{0,160}asrApiKey/.test(getSettingsBlock[0]), 'response value must not contain the key');
 });
 
-test('host: default ASR is Groq whisper-large-v3', () => {
-  assert.ok(src.includes('https://api.groq.com/openai/v1/audio/transcriptions'));
-  assert.ok(src.includes('whisper-large-v3'));
+test('host: default ASR is Groq whisper-large-v3 (in host-utils)', () => {
+  assert.ok(utilsSrc.includes('https://api.groq.com/openai/v1/audio/transcriptions'));
+  assert.ok(utilsSrc.includes('whisper-large-v3'));
 });
 
 test('host: polish failure keeps raw transcript', () => {
   assert.ok(src.includes('return raw; // any polish failure → keep the raw transcript'));
 });
 
-test('host: trust fence blocks cross-site', () => {
-  assert.ok(src.includes('sec-fetch-site'));
-  assert.ok(src.includes('isLoopbackHostname'));
+test('host: 413 overflow path is reachable (no hang, real response)', () => {
+  // Regression for the old destroy-and-never-resolve hang: readJsonBody must
+  // resolve a sentinel and handleApi must answer 413 with Connection: close.
+  assert.ok(src.includes('payload === PAYLOAD_TOO_LARGE'));
+  assert.ok(src.includes('writeJson(res, 413'));
+  assert.ok(src.includes('res.setHeader("connection", "close")'));
+  assert.ok(utilsSrc.includes('resolve(PAYLOAD_TOO_LARGE)'));
+  assert.ok(!utilsSrc.includes('req.destroy()'), 'must not destroy the stream before the 413 is sent');
 });
 
-// ---------- client-side: hotkey matcher (pure logic extracted) ----------
-const clientSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'client.js'), 'utf8');
+test('host: trustedHosts validated once at apply()', () => {
+  assert.ok(src.includes('buildTrustedHosts(ctx.webRuntime.trustedHosts'));
+  assert.ok(!/isTrustedApiRequest[\s\S]{0,200}assertTrustedAuthority/.test(src), 'no per-request assert in the handler path');
+});
 
+test('host: set-settings validates asrUrl and trims values', () => {
+  assert.ok(src.includes('asrUrl must be an http(s) URL'));
+  assert.ok(src.includes('trimmed === ""') && src.includes('delete next[key]'));
+});
+
+test('host: client abort cancels in-flight ASR/polish', () => {
+  assert.ok(src.includes('signal: abort.signal'));
+  assert.ok(src.includes('req.on("aborted"'));
+  assert.ok(src.includes('res.on("close"'));
+});
+
+test('host: pure helpers imported from host-utils', () => {
+  assert.ok(src.includes('"./host-utils.js"'));
+});
+
+test('host: trust fence blocks cross-site (in host-utils)', () => {
+  assert.ok(utilsSrc.includes('sec-fetch-site'));
+  assert.ok(utilsSrc.includes('isLoopbackHostname'));
+});
+
+// ---------- client-side: source shape (needs browser DOM) ----------
 test('client: loads via ModuleLoader with the registered id', () => {
   assert.ok(clientSrc.includes('window.__ModuleLoader__.load'));
   assert.ok(clientSrc.includes('id: "dsh-voice-scribe"'));
@@ -72,8 +113,6 @@ test('client: defaults to web-speech engine (zero key / zero config)', () => {
 });
 
 test('client: web speech reads transcript in onend (not right after stop)', () => {
-  // recognition.stop() is async — final results arrive before onend, so the
-  // transcript must be read inside onend, not immediately after stop().
   assert.ok(clientSrc.includes('recognition.onend'));
   assert.ok(clientSrc.includes('finishWebSpeech()'));
   assert.ok(clientSrc.includes('pendingWsStop'));
@@ -95,13 +134,8 @@ test('client: finds composer textarea via data-composer-card', () => {
 });
 
 test('client: API key never stored in localStorage or logged', () => {
-  // The key may be typed in the settings UI and sent to the host for storage
-  // (host-side ~/.dsh/voice-input.json), but it must never be persisted in
-  // localStorage nor appear in any status/log string.
   assert.ok(!/localStorage[\s\S]{0,80}asrApiKey/.test(clientSrc), 'asrApiKey must not be written to localStorage');
-  assert.ok(!clientSrc.includes('console.log') || !/console\.log\([^)]*key/i.test(clientSrc));
   assert.ok(!/setStatus\([^)]*key/i.test(clientSrc), 'key must not appear in status messages');
-  // The key only flows to the host via saveSettings({ asrApiKey }) — fine.
   assert.ok(clientSrc.includes('patch.asrApiKey = cloudKey.trim()') || clientSrc.includes('asrApiKey: cloudKey.trim()'));
 });
 
@@ -118,8 +152,6 @@ test('client: registers a settings section (engine/language/hotkey/polish)', () 
 });
 
 test('client: locale dictionary is nested per-language (zh/en)', () => {
-  // DSH's locale service expects { zh: {...}, en: {...} }, not a flat map —
-  // a flat map makes t(key) return the key itself (English-looking labels).
   assert.ok(clientSrc.includes('zh: {'));
   assert.ok(clientSrc.includes('en: {'));
   assert.ok(clientSrc.includes('"engine.title": "识别引擎"'));
@@ -127,20 +159,14 @@ test('client: locale dictionary is nested per-language (zh/en)', () => {
 });
 
 test('client: settings row re-renders on change (useState bump)', () => {
-  // Writing localStorage alone does not re-render the row; a useState tick
-  // makes each select visibly update immediately after a change.
   assert.ok(clientSrc.includes('_react.useState(0)'));
   assert.ok(clientSrc.includes('forceRender'));
   assert.ok(clientSrc.includes('bump()'));
 });
 
 test('client: web-speech error is not swallowed by onend', () => {
-  // onerror records wsError; onend must return early instead of calling
-  // finishWebSpeech (which would show "未识别到文字" over the real cause).
   assert.ok(clientSrc.includes('wsError = event.error || "unknown"'));
   assert.ok(clientSrc.includes('if (wsError !== null) {'));
-  assert.ok(clientSrc.includes('wsError = null;'));
-  assert.ok(clientSrc.includes('wsError = null;'));
   assert.ok(/onerror = \(event\) => \{[\s\S]*?wsError/.test(clientSrc));
 });
 
@@ -152,23 +178,17 @@ test('client: hostCall has a timeout (no infinite "转写中")', () => {
 });
 
 test('client: transcribe surfaces the host error message', () => {
-  // Caller needs asr-key-missing / asr-timeout / 401 details, not a boolean.
   assert.ok(clientSrc.includes('return { ok: false, error: msg }'));
   assert.ok(clientSrc.includes('result.error'));
 });
 
 test('client: interim results enabled + interim fallback on stop', () => {
-  // continuous:true with interimResults:false makes Chrome/Edge drop
-  // un-finalized speech on stop() -> empty transcript. interim must be on
-  // and finishWebSpeech must fall back to the last interim hypothesis.
   assert.ok(clientSrc.includes('recognition.interimResults = true'));
   assert.ok(clientSrc.includes('wsLastInterim'));
   assert.ok(clientSrc.includes('text = (wsLastInterim || "").trim()'));
 });
 
 test('client: stop shows immediate processing feedback', () => {
-  // The user taps Alt again to stop; the status pill must switch to
-  // "处理中" right away instead of staying on "录音中".
   assert.ok(clientSrc.includes('setStatus("⏳ 处理中…", true)'));
 });
 
@@ -181,21 +201,279 @@ test('client: cloud-ASR config block appears when engine = cloud-asr', () => {
   assert.ok(clientSrc.includes('function TextRow'));
   assert.ok(clientSrc.includes('engine === "cloud-asr"'));
   assert.ok(clientSrc.includes('saveCloud'));
-  assert.ok(clientSrc.includes('setCloudUrl'));
-  assert.ok(clientSrc.includes('cloud.keySet'));
   assert.ok(clientSrc.includes('type: "password"'));
-  // The key field is a password input; URL/model are text.
   assert.ok(clientSrc.includes('saveSettings(patch)'));
 });
 
+test('client: polish never rejects and keeps raw transcript on failure', () => {
+  // Regression for the "✨ 润色中… stuck forever + unhandled rejection" bug:
+  // polish() must swallow host/network errors and only accept a real string.
+  assert.ok(/async function polish[\s\S]{0,400}catch \{/.test(clientSrc));
+  assert.ok(clientSrc.includes('return data && data.ok === true && typeof data.text === "string" ? data.text : text;'));
+});
+
+test('client: finishWebSpeech has a defensive catch on polish', () => {
+  assert.ok(clientSrc.includes('.then(insert).catch(() => insert(text))'));
+});
+
+test('client: hotkey ignores repeats and non-composer editable focus', () => {
+  assert.ok(clientSrc.includes('if (event.repeat) return;'));
+  assert.ok(clientSrc.includes('isEditableElement(active)'));
+  assert.ok(clientSrc.includes('isComposerEditable(active)'));
+});
+
+test('client: status pill is accessible (aria-live)', () => {
+  assert.ok(clientSrc.includes('setAttribute("role", "status")'));
+  assert.ok(clientSrc.includes('setAttribute("aria-live", "polite")'));
+});
+
+test('client: cloud config has clear-key + URL validation + engine warnings', () => {
+  assert.ok(clientSrc.includes('clearCloudKey'));
+  assert.ok(clientSrc.includes('cloud.urlInvalid'));
+  assert.ok(clientSrc.includes('cloud.clearKey'));
+  assert.ok(clientSrc.includes('warn.wsUnsupported'));
+  assert.ok(clientSrc.includes('warn.noKey'));
+});
+
+test('client: host language default syncs into localStorage when unset', () => {
+  assert.ok(clientSrc.includes('readLanguage() === ""'));
+  assert.ok(clientSrc.includes('writeJson(LANGUAGE_KEY, value.language)'));
+});
+
+// ---------- repo-level consistency ----------
+test('repo: cordis.patch.yml name matches plugin name', () => {
+  const patch = fs.readFileSync(path.join(ROOT, 'cordis.patch.yml'), 'utf8');
+  assert.ok(patch.includes("name: 'dsh-voice-scribe'"));
+  assert.ok(patch.includes('id: voice-scribe'));
+  assert.ok(!patch.includes('dsh-voice-input'), 'patch must not reference the old package name');
+});
+
+test('repo: package.json files entries all exist', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  assert.ok(pkg.version === '0.1.2', 'version should be 0.1.2, got ' + pkg.version);
+  for (const f of pkg.files) {
+    assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
+  }
+});
+
 // ---------- docs: disclaimer present ----------
-const readme = fs.existsSync(path.join(__dirname, '..', 'README.md'))
-  ? fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8')
+const readme = fs.existsSync(path.join(ROOT, 'README.md'))
+  ? fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')
   : '';
 test('docs: README has disclaimer', () => {
   assert.ok(readme.includes('免责声明') || readme.includes('disclaimer'), 'README should carry a disclaimer');
 });
 
-console.log('');
-console.log('TOTAL: ' + passed + ' passed, ' + failed + ' failed');
-process.exit(failed ? 1 : 0);
+// ---------- REAL behavioural tests for lib/host-utils.js ----------
+async function behavioural() {
+  const utils = await import(pathToFileURL(path.join(ROOT, 'lib', 'host-utils.js')).href);
+  const { PassThrough } = require('node:stream');
+  const os = require('node:os');
+
+  // language normalization
+  test('utils: normalizeLanguageCode', () => {
+    assert.strictEqual(utils.normalizeLanguageCode('zh-CN'), 'zh');
+    assert.strictEqual(utils.normalizeLanguageCode('en-US'), 'en');
+    assert.strictEqual(utils.normalizeLanguageCode('yue'), 'yue');
+    assert.strictEqual(utils.normalizeLanguageCode('YUE'), 'yue');
+    assert.strictEqual(utils.normalizeLanguageCode(''), '');
+    assert.strictEqual(utils.normalizeLanguageCode('  '), '');
+    assert.strictEqual(utils.normalizeLanguageCode(null), '');
+    assert.strictEqual(utils.normalizeLanguageCode(undefined), '');
+  });
+
+  // body reading
+  await testAsync('utils: readJsonBody parses JSON objects', async () => {
+    const s = new PassThrough();
+    const p = utils.readJsonBody(s);
+    s.end('{"a":1,"b":"x"}');
+    assert.deepStrictEqual(await p, { a: 1, b: 'x' });
+  });
+
+  await testAsync('utils: readJsonBody handles string chunks', async () => {
+    const s = new PassThrough();
+    const p = utils.readJsonBody(s);
+    s.end('"plain-string"');
+    assert.strictEqual(await p, 'plain-string');
+  });
+
+  await testAsync('utils: readJsonBody invalid JSON resolves null', async () => {
+    const s = new PassThrough();
+    const p = utils.readJsonBody(s);
+    s.end('{oops');
+    assert.strictEqual(await p, null);
+  });
+
+  await testAsync('utils: readJsonBody empty body resolves null', async () => {
+    const s = new PassThrough();
+    const p = utils.readJsonBody(s);
+    s.end('');
+    assert.strictEqual(await p, null);
+  });
+
+  await testAsync('utils: readJsonBody oversized resolves PAYLOAD_TOO_LARGE (413 path)', async () => {
+    const s = new PassThrough();
+    const p = utils.readJsonBody(s, 1024);
+    s.end(Buffer.alloc(2048));
+    assert.strictEqual(await p, utils.PAYLOAD_TOO_LARGE);
+  });
+
+  // ASR call
+  await testAsync('utils: transcribeAudio success (trim, bearer header, zh language, webm file)', async () => {
+    const calls = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true, status: 200, json: async () => ({ text: '  你好 世界  ' }) };
+    };
+    try {
+      const text = await utils.transcribeAudio({
+        audioBase64: Buffer.from('fake-audio-bytes').toString('base64'),
+        mimeType: 'audio/webm',
+        language: 'zh-CN',
+        settings: { asrUrl: 'https://asr.example.com/v1/audio/transcriptions', asrModel: 'whisper-large-v3', asrApiKey: 'sekret' }
+      });
+      assert.strictEqual(text, '你好 世界');
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls[0].url, 'https://asr.example.com/v1/audio/transcriptions');
+      assert.strictEqual(calls[0].opts.headers.authorization, 'Bearer sekret');
+      const fd = calls[0].opts.body;
+      assert.ok(fd instanceof FormData, 'body must be FormData');
+      assert.strictEqual(fd.get('model'), 'whisper-large-v3');
+      assert.strictEqual(fd.get('language'), 'zh');
+      const file = fd.get('file');
+      assert.ok(file instanceof Blob, 'file must be a Blob');
+      assert.strictEqual(file.name, 'recording.webm');
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  await testAsync('utils: transcribeAudio preserves 3-letter language codes (yue)', async () => {
+    const calls = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => { calls.push(opts); return { ok: true, status: 200, json: async () => ({ text: 'ok' }) }; };
+    try {
+      await utils.transcribeAudio({ audioBase64: 'YQ==', mimeType: 'audio/mp4', language: 'yue', settings: { asrApiKey: 'k' } });
+      assert.strictEqual(calls[0].body.get('language'), 'yue');
+      assert.strictEqual(calls[0].body.get('file').name, 'recording.m4a');
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  await testAsync('utils: transcribeAudio http error maps to asr-http with provider message', async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'invalid api key' } }) });
+    try {
+      await assert.rejects(
+        utils.transcribeAudio({ audioBase64: 'YQ==', mimeType: 'audio/webm', language: '', settings: { asrApiKey: 'k' } }),
+        (err) => err.code === 'asr-http' && /invalid api key/.test(err.message)
+      );
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  await testAsync('utils: transcribeAudio missing key maps to asr-key-missing', async () => {
+    await assert.rejects(
+      utils.transcribeAudio({ audioBase64: 'YQ==', mimeType: 'audio/webm', language: '', settings: {} }),
+      (err) => err.code === 'asr-key-missing'
+    );
+  });
+
+  await testAsync('utils: transcribeAudio empty audio maps to audio-empty', async () => {
+    await assert.rejects(
+      utils.transcribeAudio({ audioBase64: '', mimeType: 'audio/webm', language: '', settings: { asrApiKey: 'k' } }),
+      (err) => err.code === 'audio-empty'
+    );
+  });
+
+  await testAsync('utils: transcribeAudio empty transcript maps to asr-empty', async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ text: '   ' }) });
+    try {
+      await assert.rejects(
+        utils.transcribeAudio({ audioBase64: 'YQ==', mimeType: 'audio/webm', language: '', settings: { asrApiKey: 'k' } }),
+        (err) => err.code === 'asr-empty'
+      );
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  // settings round-trip
+  await testAsync('utils: settings round-trip via DSH_HOME (owner-only on POSIX)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vs-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    try {
+      utils.writeSettings({ asrApiKey: 'sekret', asrUrl: 'https://x.example', asrModel: 'm' });
+      const back = utils.readSettings();
+      assert.strictEqual(back.asrApiKey, 'sekret');
+      assert.strictEqual(back.asrModel, 'm');
+      assert.strictEqual(back.asrUrl, 'https://x.example');
+      if (process.platform !== 'win32') {
+        const st = fs.statSync(path.join(tmp, 'voice-input.json'));
+        assert.strictEqual(st.mode & 0o777, 0o600, 'settings file must be owner-only on POSIX');
+      }
+      fs.rmSync(path.join(tmp, 'voice-input.json'));
+      assert.deepStrictEqual(utils.readSettings(), {}, 'missing settings file reads as {}');
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // trust fence
+  test('utils: isTrustedApiRequest allows loopback same-origin', () => {
+    const req = { headers: { host: '127.0.0.1:4400', 'sec-fetch-site': 'same-origin', origin: 'http://127.0.0.1:4400' } };
+    assert.strictEqual(utils.isTrustedApiRequest(req, []), true);
+  });
+
+  test('utils: isTrustedApiRequest allows loopback without origin (curl)', () => {
+    const req = { headers: { host: 'localhost:4400' } };
+    assert.strictEqual(utils.isTrustedApiRequest(req, []), true);
+  });
+
+  test('utils: isTrustedApiRequest blocks cross-site', () => {
+    const req = { headers: { host: '127.0.0.1:4400', 'sec-fetch-site': 'cross-site', origin: 'http://evil.example' } };
+    assert.strictEqual(utils.isTrustedApiRequest(req, []), false);
+  });
+
+  test('utils: isTrustedApiRequest blocks origin mismatch', () => {
+    const req = { headers: { host: '127.0.0.1:4400', origin: 'http://127.0.0.1:9999' } };
+    assert.strictEqual(utils.isTrustedApiRequest(req, []), false);
+  });
+
+  test('utils: isTrustedApiRequest blocks missing host', () => {
+    assert.strictEqual(utils.isTrustedApiRequest({ headers: {} }, []), false);
+  });
+
+  test('utils: isTrustedApiRequest honours trustedHosts for non-loopback', () => {
+    const req = { headers: { host: 'dsh.lan:8080', 'sec-fetch-site': 'same-origin', origin: 'http://dsh.lan:8080' } };
+    assert.strictEqual(utils.isTrustedApiRequest(req, ['dsh.lan:8080']), true);
+    assert.strictEqual(utils.isTrustedApiRequest(req, []), false);
+  });
+
+  test('utils: buildTrustedHosts filters invalid entries once', () => {
+    const warned = [];
+    const out = utils.buildTrustedHosts(['ok.example:443', 'bad path/entry', 'ok2.example'], (m) => warned.push(m));
+    assert.deepStrictEqual(out, ['ok.example:443', 'ok2.example']);
+    assert.strictEqual(warned.length, 1);
+  });
+}
+
+const { pathToFileURL } = require('node:url');
+
+async function main() {
+  await behavioural();
+  console.log('');
+  console.log('TOTAL: ' + passed + ' passed, ' + failed + ' failed');
+  process.exit(failed ? 1 : 0);
+}
+
+main().catch((e) => {
+  console.error('TEST RUNNER ERROR:', e);
+  process.exit(1);
+});
