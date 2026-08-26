@@ -27,7 +27,7 @@ DSH 用户大多只有 DeepSeek 原生 API key，而 DeepSeek 模型是**纯文�
 # 打包
 pnpm pack
 # 安装到你的 DSH web profile
-dsh plugin --profile web add ./dsh-voice-scribe-0.1.1.tgz
+dsh plugin --profile web add ./dsh-voice-scribe-0.1.2.tgz
 # 重启 dsh web 后刷新页面
 ```
 
