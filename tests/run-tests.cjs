@@ -87,6 +87,13 @@ test('host: pure helpers imported from host-utils', () => {
   assert.ok(src.includes('"./host-utils.js"'));
 });
 
+test('host: dsh-llm is lazy-loaded (index.js importable offline)', () => {
+  assert.ok(!/^import \{ createUserMessage \} from "@deepseek-ai\/dsh-llm"/m.test(src), 'no static dsh-llm import at module load');
+  assert.ok(src.includes('await import("@deepseek-ai/dsh-llm")'), 'lazy import inside polishText');
+  assert.ok(src.includes('export async function polishText'));
+  assert.ok(src.includes('export async function handleApi'));
+});
+
 test('host: trust fence blocks cross-site (in host-utils)', () => {
   assert.ok(utilsSrc.includes('sec-fetch-site'));
   assert.ok(utilsSrc.includes('isLoopbackHostname'));
@@ -267,6 +274,7 @@ test('docs: README has disclaimer', () => {
 // ---------- REAL behavioural tests for lib/host-utils.js ----------
 async function behavioural() {
   const utils = await import(pathToFileURL(path.join(ROOT, 'lib', 'host-utils.js')).href);
+  const host = await import(pathToFileURL(path.join(ROOT, 'lib', 'index.js')).href);
   const { PassThrough } = require('node:stream');
   const os = require('node:os');
 
@@ -461,6 +469,166 @@ async function behavioural() {
     const out = utils.buildTrustedHosts(['ok.example:443', 'bad path/entry', 'ok2.example'], (m) => warned.push(m));
     assert.deepStrictEqual(out, ['ok.example:443', 'ok2.example']);
     assert.strictEqual(warned.length, 1);
+  });
+
+  // ---- REAL behavioural tests for lib/index.js (importable offline) ----
+
+  function mockResponse() {
+    const state = { status: 0, headers: {}, body: undefined };
+    const res = {
+      _state: state,
+      setHeader(k, v) { state.headers[k] = v; },
+      writeHead(s, h) { state.status = s; if (h) Object.assign(state.headers, h); },
+      end(b) { state.body = b; },
+      on() {},
+      get writableEnded() { return state.status !== 0; }
+    };
+    return res;
+  }
+
+  /** POST a JSON body through handleApi; returns { res, body(parsed) }. */
+  async function post(hostModule, payload, ctx, extraHeaders) {
+    const req = Object.assign(new PassThrough(), {
+      method: 'POST',
+      headers: Object.assign({ 'content-type': 'application/json' }, extraHeaders || {})
+    });
+    const res = mockResponse();
+    const p = hostModule.handleApi(req, res, ctx || {});
+    req.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+    await p;
+    return { res, body: res._state.body ? JSON.parse(res._state.body) : null };
+  }
+
+  await testAsync('host: polishText keeps raw transcript when prepareCall throws', async () => {
+    const ctx = { llm: { prepareCall: async () => { throw new Error('no route'); } } };
+    const out = await host.polishText({ text: '嗯 好的', provider: 'p', model: 'm', ctx });
+    assert.strictEqual(out, '嗯 好的');
+  });
+
+  await testAsync('host: polishText returns blank for blank text without calling llm', async () => {
+    let called = false;
+    const ctx = { llm: { prepareCall: async () => { called = true; throw new Error('x'); } } };
+    assert.strictEqual(await host.polishText({ text: '   ', provider: 'p', model: 'm', ctx }), '');
+    assert.strictEqual(called, false, 'prepareCall must not run for blank text');
+  });
+
+  await testAsync('host: polishText skips over-long text without calling llm', async () => {
+    let called = false;
+    const ctx = { llm: { prepareCall: async () => { called = true; throw new Error('x'); } } };
+    const long = 'a'.repeat(12001);
+    assert.strictEqual(await host.polishText({ text: long, provider: 'p', model: 'm', ctx }), long);
+    assert.strictEqual(called, false, 'prepareCall must not run for over-long text');
+  });
+
+  await testAsync('host: handleApi 405 for non-POST', async () => {
+    const req = Object.assign(new PassThrough(), { method: 'GET', headers: {} });
+    const res = mockResponse();
+    await host.handleApi(req, res, {});
+    assert.strictEqual(res._state.status, 405);
+    assert.strictEqual(JSON.parse(res._state.body).ok, false);
+  });
+
+  await testAsync('host: handleApi 415 for non-JSON content type', async () => {
+    const { res } = await post(host, { action: 'get-settings' }, {}, { 'content-type': 'text/plain' });
+    assert.strictEqual(res._state.status, 415);
+  });
+
+  await testAsync('host: handleApi 400 for invalid JSON', async () => {
+    const { res } = await post(host, '{oops');
+    assert.strictEqual(res._state.status, 400);
+  });
+
+  await testAsync('host: handleApi 404 for unknown action', async () => {
+    const { res } = await post(host, { action: 'nope' });
+    assert.strictEqual(res._state.status, 404);
+  });
+
+  await testAsync('host: handleApi responds 413 with connection:close to oversized body', async () => {
+    const req = Object.assign(new PassThrough(), { method: 'POST', headers: { 'content-type': 'application/json' } });
+    const res = mockResponse();
+    const p = host.handleApi(req, res, {});
+    req.end(Buffer.alloc(25 * 1024 * 1024));
+    await p;
+    assert.strictEqual(res._state.status, 413, 'must answer 413 instead of hanging');
+    assert.strictEqual(res._state.headers['connection'], 'close');
+    assert.strictEqual(JSON.parse(res._state.body).error.code, 'payload-too-large');
+  });
+
+  await testAsync('host: handleApi get-settings exposes hasKey but never the key', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vs-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    try {
+      utils.writeSettings({ asrApiKey: 'sekret' });
+      const { res } = await post(host, { action: 'get-settings' });
+      assert.strictEqual(res._state.status, 200);
+      const body = JSON.parse(res._state.body);
+      assert.strictEqual(body.ok, true);
+      assert.strictEqual(body.value.hasKey, true);
+      assert.ok(!JSON.stringify(body).includes('sekret'), 'key must not appear in the response');
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('host: handleApi set-settings rejects non-http asrUrl', async () => {
+    const { res } = await post(host, { action: 'set-settings', patch: { asrUrl: 'ftp://x' } });
+    assert.strictEqual(res._state.status, 400);
+  });
+
+  await testAsync('host: handleApi set-settings trims values and empty deletes the key', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vs-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    try {
+      utils.writeSettings({ asrApiKey: 'old', asrUrl: 'https://a.example' });
+      const { res } = await post(host, { action: 'set-settings', patch: { asrApiKey: '  new  ', asrUrl: '   ' } });
+      assert.strictEqual(res._state.status, 200);
+      const back = utils.readSettings();
+      assert.strictEqual(back.asrApiKey, 'new');
+      assert.strictEqual(back.asrUrl, undefined, 'empty asrUrl should delete the field');
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('host: handleApi transcribe without key returns asr-key-missing', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vs-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    try {
+      const { res } = await post(host, { action: 'transcribe', audio: Buffer.from('abc').toString('base64'), mimeType: 'audio/webm', language: 'zh-CN' });
+      assert.strictEqual(res._state.status, 200);
+      const body = JSON.parse(res._state.body);
+      assert.strictEqual(body.ok, false);
+      assert.strictEqual(body.error.code, 'asr-key-missing');
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('host: handleApi polish falls back to raw transcript on route failure', async () => {
+    const ctx = { llm: { prepareCall: async () => { throw new Error('no route'); } } };
+    const { res } = await post(host, { action: 'polish', text: '嗯 好的', provider: 'p', model: 'm' }, ctx);
+    assert.strictEqual(res._state.status, 200);
+    const body = JSON.parse(res._state.body);
+    assert.strictEqual(body.ok, true);
+    assert.strictEqual(body.text, '嗯 好的');
+  });
+
+  await testAsync('host: handleApi polish requires provider and model', async () => {
+    const { res } = await post(host, { action: 'polish', text: 'hi' });
+    assert.strictEqual(res._state.status, 400);
+  });
+
+  await testAsync('host: handleApi list-models with empty provider list', async () => {
+    const ctx = { llm: { listProviders: () => [], listModels: async () => [] } };
+    const { res } = await post(host, { action: 'list-models' }, ctx);
+    assert.strictEqual(res._state.status, 200);
+    assert.deepStrictEqual(JSON.parse(res._state.body).value, []);
   });
 }
 
