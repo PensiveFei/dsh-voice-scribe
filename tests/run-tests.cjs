@@ -177,6 +177,14 @@ test('client: web-speech error is not swallowed by onend', () => {
   assert.ok(/onerror = \(event\) => \{[\s\S]*?wsError/.test(clientSrc));
 });
 
+test('client: web-speech network error guides the user to cloud ASR', () => {
+  // A bare "需联网" leaves users stuck on mainland-China networks where the
+  // Google/Microsoft speech backend is blocked — the message must say how to
+  // switch engines.
+  assert.ok(clientSrc.includes('切换为「云端 ASR」'));
+  assert.ok(/event\.error === "network"[\s\S]{0,600}切换为「云端 ASR」/.test(clientSrc));
+});
+
 test('client: hostCall has a timeout (no infinite "转写中")', () => {
   assert.ok(clientSrc.includes('HOST_CALL_TIMEOUT_MS'));
   assert.ok(clientSrc.includes('new AbortController()'));

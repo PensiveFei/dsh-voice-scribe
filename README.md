@@ -71,6 +71,12 @@ dsh plugin --profile web add ./dsh-voice-scribe-0.1.2.tgz
 5. **风险自担**：因使用本插件（包括但不限于语音内容泄露、误转写、第三方服务故障）造成的任何损失，开发者不承担责任。
 6. **敏感信息**：请勿在语音中输入密码、密钥、身份证号等敏感信息。
 
+## 已知限制与排错 Troubleshooting
+
+- **Web Speech 依赖外部语音服务**：浏览器内置识别（Chrome/Edge）会把音频发送给 **Google / Microsoft 的语音服务**。在部分网络（如中国大陆）这些服务不可达，会提示「浏览器语音识别不可用」。解法：到 **设置 → 语音输入** 切换为「云端 ASR」。
+- **云端 ASR（推荐替代）**：任意 OpenAI 兼容 `/v1/audio/transcriptions` 端点。国内直连可用的免费示例：**硅基流动**（Base URL `https://api.siliconflow.cn/v1/audio/transcriptions`，模型 `FunAudioLLM/SenseVoiceSmall`）。云端转写由本地 DSH host 转发（Node 直连，不走浏览器代理，不受浏览器网络限制影响）。
+- **麦克风权限**：首次使用需在浏览器地址栏授权（DSH 默认 127.0.0.1 属安全上下文，支持）。若提示权限被拒，检查地址栏麦克风图标。
+
 ## 开发 Dev
 
 ```bash

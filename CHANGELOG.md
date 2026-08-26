@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **trustedHosts 校验移到启动期一次完成**：非法配置条目不再让每次 API 请求抛异常（此前在请求热路径里 assert 且位于 try 之外，一条坏配置即 500/挂起全部请求）
 - **语言码不再截断**：`zh-CN`→`zh`、`en-US`→`en`，三字母码（如粤语 `yue`）保持完整（此前 `slice(0,2)` 会截成无效的 `yu`）
 - **热键不再误触非 composer 输入框**：焦点在搜索框/设置输入框等可编辑元素时按 Alt 不会触发录音；`Alt+空格` 按住重复触发已过滤
+- **Web Speech 网络错误提示改为可操作指引**：说明依赖 Google/Microsoft 语音服务、当前网络不可达，并引导到 设置 → 语音输入 切换「云端 ASR」（大陆网络下该引擎不可用，此提示直接告诉用户怎么换引擎）
 - **设置写入校验**：`asrUrl` 必须是 http(s):// 开头；空/纯空白字符串删除对应字段（可借此清除已存 API key）
 
 ### Added
