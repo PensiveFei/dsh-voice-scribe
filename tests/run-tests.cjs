@@ -277,6 +277,15 @@ test('client: local engine decodes PCM in-browser and posts to host', () => {
   assert.ok(clientSrc.includes('action: "local-download"'));
 });
 
+test('client: local decode cannot hang (ArrayBuffer + timeout)', () => {
+  // Passing a Blob straight into decodeAudioData is non-standard and can
+  // silently never call back in Edge — the fix converts to ArrayBuffer first
+  // and adds a hard 30s timeout so the pill can never stick.
+  assert.ok(clientSrc.includes('await blob.arrayBuffer()'));
+  assert.ok(clientSrc.includes('setTimeout(() => {'));
+  assert.ok(clientSrc.includes('音频解码超时'));
+});
+
 // ---------- repo-level consistency ----------
 test('repo: cordis.patch.yml name matches plugin name', () => {
   const patch = fs.readFileSync(path.join(ROOT, 'cordis.patch.yml'), 'utf8');
