@@ -1,5 +1,8 @@
 # dsh-voice-scribe
 
+[![MIT license](https://img.shields.io/github/license/PensiveFei/dsh-voice-scribe)](https://github.com/PensiveFei/dsh-voice-scribe/blob/main/LICENSE)
+[![release](https://img.shields.io/github/v/release/PensiveFei/dsh-voice-scribe)](https://github.com/PensiveFei/dsh-voice-scribe/releases)
+
 DSH 专属语音输入插件：**点按 Alt 说话、再点按转文字**，插入输入框光标处。
 Voice input for DeepSeek Harness: tap Alt to talk, tap again to get text.
 
