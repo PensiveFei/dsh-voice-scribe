@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] — 2026-08-28
+
+### Added
+
+- **识别语言新增 粤语 / 日本語 / 한국어**：SenseVoice 模型原生支持中/英/日/韩/粤，本地离线识别自动检测语言；所选语言同时作用于浏览器 Web Speech（完整 locale 码）与云端 ASR（归一化为主子标签，如 yue-Hant-HK→yue）
+
+### Fixed
+
+- **设置页「未配置 API key」警告不再误报**：此前引擎为「自动 / 本地离线识别」（都不需要 key）时也显示该警告；现在只在「云端 ASR」引擎下提示
+- **本地识别器并发加载去重**：两次重叠的转写曾各自构造一个 OfflineRecognizer，约 230MB 模型被加载进内存两次；现在并发调用共享同一个加载 Promise，失败自动清除缓存可重试
+- **模型下载补齐背压**：file.write() 返回 false 时等待 drain 再继续，避免镜像快、磁盘慢时把 230MB 整个堆进内存
+- **镜像失败不再留垃圾**：此前回退镜像时把最多 230MB 的半成品改名 .part.fail 永久留在磁盘；现在失败即删 .part，且每次启动下载先清理陈旧的 .part / .part.fail
+- **本地转写超时放宽到 180s**：本地 CPU 推理约 0.3× 实时，最长录音（约 4.7 分钟）需 ~90s，此前沿用 75s 通用上限会被客户端提前掐断
+- **「✨ 润色中…」状态改为常驻**：润色最长 30s，此前 2.6s 就淡出，看起来像没在工作
+- **模型下载轮询去重**：下载进行中再按 Alt 曾会启动第二个重复轮询（localDownloading 标志只写不读）；现在共享同一个进行中的 Promise
+
 ## [0.2.0] — 2026-08-27
 
 ### Added

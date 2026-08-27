@@ -26,6 +26,10 @@ dsh plugin --profile web add dsh-voice-scribe   # 重启 dsh web 后生效
 
 > 浏览器识别依赖外部语音服务（Chrome 在大陆被墙、Edge Stable 有已知回归），故默认以本地识别为主。
 
+## 识别语言 Languages
+
+支持 **中文 / English / 粤语 / 日本語 / 한국어**（设置 → 语音输入 可选）。本地离线识别自动检测语言；所选语言作用于浏览器与云端识别。
+
 ## 隐私 Privacy
 
 本地引擎音频不出本机；Web Speech 由浏览器语音服务处理；云端 ASR 的 key 只存服务端。

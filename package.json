@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice-scribe",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "DSH 专属语音输入插件：点按 Alt 说话、再点按转文字。默认本地离线识别（SenseVoice，零配置零 key、音频不出本机），自动回退浏览器 Web Speech，可选云端 ASR 与润色（复用 DSH 模型）。Voice input for DeepSeek Harness: tap Alt to talk, get text in the composer — local SenseVoice by default, zero config, zero API key.",
   "license": "MIT",
   "type": "module",

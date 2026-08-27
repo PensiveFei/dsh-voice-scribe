@@ -266,6 +266,35 @@ test('client: pre-0.2.0 persisted "web-speech" migrates to the auto default', ()
   assert.ok(clientSrc.includes('engine-migrated-v2'));
 });
 
+test('client: no-key warning is gated on the cloud engine (auto/local are keyless)', () => {
+  // Regression: the warning used to show on auto/local too, telling users of
+  // the keyless engines to configure an API key they will never need.
+  assert.ok(clientSrc.includes('engine === "cloud-asr" ? (cloudHasKey ? "" : t("warn.noKey")) : ""'));
+});
+
+test('client: polish status is persistent (no premature fade)', () => {
+  assert.ok(clientSrc.includes('setStatus("✨ 润色中…", true)'));
+  assert.ok(!clientSrc.includes('setStatus("✨ 润色中…")'), 'transient polish status would fade mid-call');
+});
+
+test('client: local-transcribe gets a longer timeout than the generic cap', () => {
+  assert.ok(clientSrc.includes('LOCAL_TRANSCRIBE_TIMEOUT_MS = 180_000'));
+  assert.ok(clientSrc.includes('async function hostCall(body, timeoutMs)'));
+  assert.ok(clientSrc.includes('sampleRate: 16000 }, LOCAL_TRANSCRIBE_TIMEOUT_MS)'));
+});
+
+test('client: language picker offers Cantonese/Japanese/Korean', () => {
+  assert.ok(clientSrc.includes('"yue-Hant-HK"'));
+  assert.ok(clientSrc.includes('"ja-JP"'));
+  assert.ok(clientSrc.includes('"ko-KR"'));
+  assert.ok(clientSrc.includes('language.note'));
+});
+
+test('client: ensureLocalModel is re-entrant (shared in-flight promise)', () => {
+  assert.ok(clientSrc.includes('localModelPromise'));
+  assert.ok(clientSrc.includes('if (localModelPromise) return localModelPromise;'));
+});
+
 test('client: auto engine routes local-first and falls back from Web Speech', () => {
   assert.ok(clientSrc.includes('readJson(ENGINE_KEY, "auto")'));
   assert.ok(clientSrc.includes('function effectiveEngine()'));
@@ -302,7 +331,7 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.2.0', 'version should be 0.2.0, got ' + pkg.version);
+  assert.ok(pkg.version === '0.3.0', 'version should be 0.3.0, got ' + pkg.version);
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
@@ -735,6 +764,125 @@ async function behavioural() {
 
   test('local-asr: disposeRecognizer is safe to call', () => {
     local.disposeRecognizer();
+  });
+
+  await testAsync('local-asr: concurrent ensureRecognizer shares ONE model load', async () => {
+    // Regression: two overlapping transcriptions used to each construct an
+    // OfflineRecognizer — the ~230 MB model was loaded into memory TWICE.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-rec-'));
+    fs.writeFileSync(path.join(dir, 'model.int8.onnx'), Buffer.alloc(16));
+    fs.writeFileSync(path.join(dir, 'tokens.txt'), 'a b c');
+    local.disposeRecognizer();
+    let loads = 0;
+    const loader = async () => { loads++; await new Promise((r) => setTimeout(r, 50)); return { fake: true }; };
+    try {
+      const [a, b, c] = await Promise.all([
+        local.ensureRecognizer(dir, loader),
+        local.ensureRecognizer(dir, loader),
+        local.ensureRecognizer(dir, loader)
+      ]);
+      assert.strictEqual(loads, 1, 'concurrent loads must share one promise, got ' + loads);
+      assert.strictEqual(a, b);
+      assert.strictEqual(b, c);
+      await local.ensureRecognizer(dir, loader); // cached singleton — still one load
+      assert.strictEqual(loads, 1);
+    } finally {
+      local.disposeRecognizer();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('local-asr: failed recognizer load clears the memo so retry works', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-rec-fail-'));
+    fs.writeFileSync(path.join(dir, 'model.int8.onnx'), Buffer.alloc(16));
+    fs.writeFileSync(path.join(dir, 'tokens.txt'), 'a b c');
+    local.disposeRecognizer();
+    let loads = 0;
+    const loader = async () => { loads++; if (loads === 1) throw new Error('boom'); return { ok: true }; };
+    try {
+      await assert.rejects(() => local.ensureRecognizer(dir, loader), /boom/);
+      const rec = await local.ensureRecognizer(dir, loader);
+      assert.deepStrictEqual(rec, { ok: true });
+      assert.strictEqual(loads, 2, 'a failure must not poison later loads');
+    } finally {
+      local.disposeRecognizer();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('local-asr: model-not-ready when files are missing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-rec-empty-'));
+    local.disposeRecognizer();
+    try {
+      await assert.rejects(
+        () => local.ensureRecognizer(dir, async () => ({})),
+        (e) => e && e.code === 'model-not-ready'
+      );
+    } finally {
+      local.disposeRecognizer();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('local-asr: cleanStaleParts removes only .part/.part.fail', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-clean-'));
+    fs.writeFileSync(path.join(dir, 'model.int8.onnx.part'), 'x');
+    fs.writeFileSync(path.join(dir, 'model.int8.onnx.part.fail'), 'x');
+    fs.writeFileSync(path.join(dir, 'tokens.txt'), 'keep');
+    try {
+      assert.strictEqual(await local.cleanStaleParts(dir), 2);
+      assert.deepStrictEqual(fs.readdirSync(dir), ['tokens.txt']);
+      assert.strictEqual(await local.cleanStaleParts(path.join(dir, 'missing')), 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('local-asr: startModelDownload falls back across mirrors, no junk left', async () => {
+    const http = require('node:http');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-dl-'));
+    const payload = Buffer.alloc(256 * 1024, 7); // chunked to exercise the stream loop
+    const bad = http.createServer((req, res) => { res.writeHead(404); res.end('nope'); });
+    const good = http.createServer((req, res) => {
+      if (req.url.endsWith('/tokens.txt')) { res.writeHead(200, { 'content-length': 5 }); res.end('a b c'); return; }
+      if (req.url.endsWith('/model.int8.onnx')) {
+        res.writeHead(200, { 'content-length': payload.length });
+        const step = 32 * 1024;
+        let off = 0;
+        const timer = setInterval(() => {
+          if (off >= payload.length) { clearInterval(timer); res.end(); return; }
+          res.write(payload.subarray(off, off + step));
+          off += step;
+        }, 5);
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise((r) => bad.listen(0, '127.0.0.1', r));
+    await new Promise((r) => good.listen(0, '127.0.0.1', r));
+    try {
+      const mirrors = [
+        'http://127.0.0.1:' + bad.address().port,
+        'http://127.0.0.1:' + good.address().port
+      ];
+      const start = await local.startModelDownload(dir, mirrors);
+      assert.strictEqual(start.ok, true);
+      assert.strictEqual(start.started, true);
+      for (let i = 0; i < 200 && local.getDownloadState().running; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const state = local.getDownloadState();
+      assert.strictEqual(state.running, false);
+      assert.strictEqual(state.error, '');
+      assert.strictEqual(await local.modelReady(dir), true);
+      assert.strictEqual(fs.statSync(path.join(dir, 'model.int8.onnx')).size, payload.length);
+      const junk = fs.readdirSync(dir).filter((f) => f.includes('.part'));
+      assert.deepStrictEqual(junk, [], 'no .part/.part.fail junk left: ' + junk.join(','));
+    } finally {
+      await new Promise((r) => bad.close(r));
+      await new Promise((r) => good.close(r));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 }
 
