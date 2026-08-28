@@ -147,7 +147,8 @@ test('client: finds composer textarea via data-composer-card', () => {
 test('client: API key never stored in localStorage or logged', () => {
   assert.ok(!/localStorage[\s\S]{0,80}asrApiKey/.test(clientSrc), 'asrApiKey must not be written to localStorage');
   assert.ok(!/setStatus\([^)]*key/i.test(clientSrc), 'key must not appear in status messages');
-  assert.ok(clientSrc.includes('patch.asrApiKey = cloudKey.trim()') || clientSrc.includes('asrApiKey: cloudKey.trim()'));
+  assert.ok(clientSrc.includes('row.key = p.key.trim()') || clientSrc.includes('patch.asrApiKey = cloudKey.trim()'), 'key flows to the host patch, never to localStorage');
+  assert.ok(!/localStorage[\s\S]{0,120}\.key/.test(clientSrc), 'provider keys must not touch localStorage');
 });
 
 test('client: registers a settings section (engine/language/hotkey/polish)', () => {
@@ -321,6 +322,44 @@ test('client: local decode cannot hang (ArrayBuffer + timeout)', () => {
   assert.ok(clientSrc.includes('音频解码超时'));
 });
 
+test('client: registers a composer microphone button (conversation.input.right)', () => {
+  assert.ok(clientSrc.includes('ctx.slots.inject("conversation.input.right"'));
+  assert.ok(clientSrc.includes('MicrophoneButton'));
+  assert.ok(clientSrc.includes('registerMicButton'));
+  assert.ok(clientSrc.includes('dsh-voice-scribe-mic'));
+});
+
+test('client: draft channel prefers slot setDraft, falls back to textarea', () => {
+  assert.ok(clientSrc.includes('function setDraftChannel'));
+  assert.ok(clientSrc.includes('function draftText()'));
+  assert.ok(clientSrc.includes('function setDraftText(text)'));
+  assert.ok(clientSrc.includes('function insertTranscript(text)'));
+  assert.ok(clientSrc.includes('draftChannel && typeof draftChannel.setDraft === "function"'));
+});
+
+test('client: web speech streams interim results into the composer in realtime', () => {
+  assert.ok(clientSrc.includes('wsDraftBase'));
+  assert.ok(clientSrc.includes('setDraftText(wsDraftBase + sep + wsLastInterim)'));
+  assert.ok(clientSrc.includes('interimChanged'));
+});
+
+test('client: local engine realtime preview (3s cadence) while recording', () => {
+  assert.ok(clientSrc.includes('runLocalPreview'));
+  assert.ok(clientSrc.includes('localPreviewTimer = setInterval'));
+  assert.ok(clientSrc.includes('recDraftBase'));
+  assert.ok(clientSrc.includes('clearInterval(localPreviewTimer)'));
+});
+
+test('client: cloud settings UI edits a provider chain (not a single endpoint)', () => {
+  assert.ok(clientSrc.includes('const [providers, setProviders]'));
+  assert.ok(clientSrc.includes('updateProvider'));
+  assert.ok(clientSrc.includes('addProvider'));
+  assert.ok(clientSrc.includes('removeProvider'));
+  assert.ok(clientSrc.includes('asrProviders: chain'));
+  assert.ok(clientSrc.includes('cloud.addProvider'));
+  assert.ok(clientSrc.includes('cloud.removeProvider'));
+});
+
 // ---------- repo-level consistency ----------
 test('repo: cordis.patch.yml name matches plugin name', () => {
   const patch = fs.readFileSync(path.join(ROOT, 'cordis.patch.yml'), 'utf8');
@@ -331,7 +370,7 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.3.0', 'version should be 0.3.0, got ' + pkg.version);
+  assert.ok(pkg.version === '0.4.0', 'version should be 0.4.0, got ' + pkg.version);
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
@@ -484,6 +523,121 @@ async function behavioural() {
     } finally {
       globalThis.fetch = orig;
     }
+  });
+
+  await testAsync('utils: transcribeAudio falls back to the next provider on failure', async () => {
+    const calls = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      calls.push(url);
+      if (url.indexOf('first') >= 0) return { ok: false, status: 500, json: async () => ({ error: { message: 'boom' } }) };
+      return { ok: true, status: 200, json: async () => ({ text: '  fallback ok  ' }) };
+    };
+    try {
+      const text = await utils.transcribeAudio({
+        audioBase64: 'YQ==',
+        mimeType: 'audio/webm',
+        language: '',
+        settings: {
+          asrProviders: [
+            { url: 'https://first.example/v1/audio/transcriptions', model: 'm1', key: 'k1' },
+            { url: 'https://second.example/v1/audio/transcriptions', model: 'm2', key: 'k2' }
+          ]
+        }
+      });
+      assert.strictEqual(text, 'fallback ok');
+      assert.deepStrictEqual(calls, [
+        'https://first.example/v1/audio/transcriptions',
+        'https://second.example/v1/audio/transcriptions'
+      ]);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  await testAsync('utils: transcribeAudio all providers failing aggregates errors', async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (url.indexOf('a.example') >= 0) return { ok: false, status: 401, json: async () => ({ error: { message: 'bad key' } }) };
+      return { ok: false, status: 500, json: async () => ({ error: { message: 'server broke' } }) };
+    };
+    try {
+      await assert.rejects(
+        utils.transcribeAudio({
+          audioBase64: 'YQ==',
+          mimeType: 'audio/webm',
+          language: '',
+          settings: {
+            asrProviders: [
+              { url: 'https://a.example/v1', model: 'm', key: 'k' },
+              { url: 'https://b.example/v1', model: 'm', key: 'k' }
+            ]
+          }
+        }),
+        (err) => {
+          assert.strictEqual(err.code, 'asr-failed');
+          assert.ok(/a\.example/.test(err.message), 'aggregated message should mention provider a: ' + err.message);
+          assert.ok(/b\.example/.test(err.message), 'aggregated message should mention provider b: ' + err.message);
+          return true;
+        }
+      );
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  await testAsync('utils: transcribeAudio legacy single-endpoint settings still work', async () => {
+    const calls = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = async (url) => { calls.push(url); return { ok: true, status: 200, json: async () => ({ text: 'legacy' }) }; };
+    try {
+      const text = await utils.transcribeAudio({
+        audioBase64: 'YQ==',
+        mimeType: 'audio/webm',
+        language: '',
+        settings: { asrUrl: 'https://legacy.example/v1', asrModel: 'whisper-1', asrApiKey: 'oldkey' }
+      });
+      assert.strictEqual(text, 'legacy');
+      assert.deepStrictEqual(calls, ['https://legacy.example/v1']);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  test('utils: resolveAsrProviders folds legacy fields first, then the chain', () => {
+    const out = utils.resolveAsrProviders({
+      asrUrl: 'https://legacy.example/v1',
+      asrModel: 'whisper-1',
+      asrApiKey: 'oldkey',
+      asrProviders: [
+        { url: 'https://b.example/v1', model: 'm2', key: 'k2' },
+        { url: '', model: 'skip-me', key: 'x' },
+        { url: 'https://c.example/v1', model: 'm3' }
+      ]
+    });
+    assert.strictEqual(out.length, 3);
+    assert.strictEqual(out[0].url, 'https://legacy.example/v1');
+    assert.strictEqual(out[0].key, 'oldkey');
+    assert.strictEqual(out[1].url, 'https://b.example/v1');
+    assert.strictEqual(out[1].key, 'k2');
+    assert.strictEqual(out[2].url, 'https://c.example/v1');
+    assert.strictEqual(out[2].key, '');
+    assert.strictEqual(out[2].model, 'm3');
+  });
+
+  test('utils: resolveAsrProviders empty settings falls back to the default endpoint', () => {
+    const out = utils.resolveAsrProviders({});
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].url, 'https://api.groq.com/openai/v1/audio/transcriptions');
+    assert.strictEqual(out[0].model, 'whisper-large-v3');
+    assert.strictEqual(out[0].key, '');
+  });
+
+  test('utils: resolveAsrProviders caps the chain at MAX_ASR_PROVIDERS', () => {
+    const providers = [];
+    for (let i = 0; i < 10; i++) providers.push({ url: 'https://p' + i + '.example/v1', model: 'm', key: 'k' });
+    const out = utils.resolveAsrProviders({ asrProviders: providers });
+    assert.strictEqual(out.length, utils.MAX_ASR_PROVIDERS);
   });
 
   // settings round-trip
@@ -664,6 +818,58 @@ async function behavioural() {
       const back = utils.readSettings();
       assert.strictEqual(back.asrApiKey, 'new');
       assert.strictEqual(back.asrUrl, undefined, 'empty asrUrl should delete the field');
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('host: handleApi set-settings asrProviders saves chain (key absent inherits stored)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vs-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    try {
+      // Pre-existing chain with a key on the first provider.
+      utils.writeSettings({ asrProviders: [{ url: 'https://a.example/v1', model: 'm1', key: 'storedkey' }] });
+      // Save WITHOUT a key for that url -> must keep 'storedkey'.
+      const { res } = await post(host, { action: 'set-settings', patch: { asrProviders: [{ url: 'https://a.example/v1', model: 'm1' }] } });
+      assert.strictEqual(res._state.status, 200);
+      const back = utils.readSettings();
+      assert.strictEqual(back.asrProviders.length, 1);
+      assert.strictEqual(back.asrProviders[0].key, 'storedkey', 'absent key must inherit the stored key');
+      // Explicit empty key deletes it.
+      const { res: res2 } = await post(host, { action: 'set-settings', patch: { asrProviders: [{ url: 'https://a.example/v1', model: 'm1', key: '' }] } });
+      assert.strictEqual(res2._state.status, 200);
+      const back2 = utils.readSettings();
+      assert.strictEqual(back2.asrProviders[0].key, null, 'empty key deletes the stored key (null marker)');
+      // New key sets it.
+      const { res: res3 } = await post(host, { action: 'set-settings', patch: { asrProviders: [{ url: 'https://a.example/v1', model: 'm1', key: 'newkey' }] } });
+      assert.strictEqual(res3._state.status, 200);
+      assert.strictEqual(utils.readSettings().asrProviders[0].key, 'newkey');
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('host: handleApi get-settings exposes provider view (hasKey, never the key)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vs-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    try {
+      utils.writeSettings({ asrProviders: [
+        { url: 'https://a.example/v1', model: 'm1', key: 'sekret' },
+        { url: 'https://b.example/v1', model: 'm2', key: '' }
+      ] });
+      const { res, body } = await post(host, { action: 'get-settings' });
+      assert.strictEqual(res._state.status, 200);
+      assert.strictEqual(body.ok, true);
+      assert.ok(Array.isArray(body.value.providers), 'providers view present');
+      assert.strictEqual(body.value.providers.length, 2);
+      assert.strictEqual(body.value.providers[0].url, 'https://a.example/v1');
+      assert.strictEqual(body.value.providers[0].hasKey, true);
+      assert.strictEqual(body.value.providers[1].hasKey, false);
+      assert.ok(!JSON.stringify(body.value).includes('sekret'), 'key must never be serialized');
     } finally {
       if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
       fs.rmSync(tmp, { recursive: true, force: true });

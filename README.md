@@ -17,7 +17,9 @@ dsh plugin --profile web add dsh-voice-scribe   # 重启 dsh web 后生效
 
 ## 使用 Usage
 
-点输入框 → 按 **Alt** 开始说话 → 再按 **Alt** 结束并转写（备选热键 **Alt+空格**，设置可切换）。
+- **麦克风按钮**：输入框右侧 🎤 图标，点击开始说话、再点停止并转写（按钮录音中变红）
+- **热键**：点输入框 → 按 **Alt** 开始说话 → 再按 **Alt** 结束并转写（备选 **Alt+空格**，设置可切换）
+- **实时中间结果**：说话时识别文本实时出现在草稿里（浏览器引擎逐字、本地引擎每 3 秒刷新），停止后替换为最终结果
 
 ## 识别引擎 Engine（默认「自动」，零配置）
 
@@ -26,9 +28,11 @@ dsh plugin --profile web add dsh-voice-scribe   # 重启 dsh web 后生效
 | **自动（默认）** | 本地离线识别优先；不可用时自动回退浏览器识别 |
 | 本地离线识别 | SenseVoice，零配置零 key、**音频不出本机**；首次使用自动下载模型（约 230MB，国内镜像，只需一次） |
 | 浏览器 Web Speech | 零配置；依赖 Google/Microsoft 服务（国内 / Edge Stable 可能不可用） |
-| 云端 ASR（可选） | OpenAI 兼容端点，需在设置中配置 API key |
+| 云端 ASR（可选） | **服务链**：可配置多个 OpenAI 兼容端点按序尝试、失败自动切换；需在设置中配置 API key |
 
 > 浏览器识别依赖外部语音服务（Chrome 在大陆被墙、Edge Stable 有已知回归），故默认以本地识别为主。
+>
+> 云端 ASR 服务链示例：Groq（免费层）→ 硅基流动 SenseVoice → 阿里云百炼，任一失败自动尝试下一个（设置 → 语音输入 → 云端 ASR）。
 
 ## 识别语言 Languages
 

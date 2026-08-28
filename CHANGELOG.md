@@ -3,6 +3,25 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] — 2026-08-29
+
+### Added
+
+- **输入框麦克风按钮**：composer 工具行右侧新增麦克风图标（`conversation.input.right` slot），点击即可录音/停止，与 Alt 热键等效；录音/转写中图标变色
+- **实时中间结果（边说边上屏）**：Web Speech 引擎把 interim 识别结果实时写入草稿（基于录音开始时的草稿基线，不覆盖已有内容），停止后用最终文本替换；本地离线引擎每 3 秒对已录内容增量转写一次实时上屏（云端引擎不做，避免每次 2.5s 一次 API 调用）
+- **云端 ASR 服务链（多 provider 故障切换）**：云端引擎可配置多个 OpenAI 兼容端点（URL / 模型 / API key），按顺序尝试，失败自动切换到下一个；全部失败时返回聚合错误（含每个服务的失败原因）。旧版单端点配置（asrUrl/asrModel/asrApiKey）自动折叠为链的第一个，无需迁移
+- 服务链上限 4 个 provider；`get-settings` 只返回 provider 的 url/model/hasKey（key 永不进浏览器）
+
+### Changed
+
+- 设置页「云端 ASR 配置」从单组输入改为**服务链列表**：每行一个服务（#序号 + URL + 模型 + Key），支持「+ 添加服务」/「移除」，保存时整体提交
+- 转写结果写入改走 **draft channel**（slot 的 setDraft 优先，textarea 兜底），与实时上屏共用同一通道
+
+### Fixed
+
+- 本地引擎录音时草稿基线在 `startRecording` 捕获，停止时定时器清理（`finishRecording` / `stopRecording` 双路径），避免「录音太短」或异常停止后残留定时器
+- **SECURITY.md 漏洞报告策略修正**：原「请勿在公开 issue 中提交安全问题」一刀切且未提供实际联系邮箱——现改为高危漏洞走 GitHub Security Advisories（附链接）、一般问题/疑问可直接公开讨论
+
 ## [0.3.0] — 2026-08-28
 
 ### Added
