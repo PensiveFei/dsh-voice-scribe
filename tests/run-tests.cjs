@@ -103,6 +103,35 @@ test('host: trust fence blocks cross-site (in host-utils)', () => {
   assert.ok(utilsSrc.includes('isLoopbackHostname'));
 });
 
+test('host: hot-word table applies to cloud and local transcription', () => {
+  assert.ok(src.includes('applyHotwords(text, loadHotwords().rules)'));
+  // Both transcription paths (cloud + local) wrap their result with hot words.
+  const transcribeBlock = src.match(/action === "transcribe"[\s\S]*?return;/) || [''];
+  assert.ok(transcribeBlock[0].includes('applyHotwords'), 'cloud transcribe must apply hot words');
+  const localBlock = src.match(/action === "local-transcribe"[\s\S]{0,900}applyHotwords/) || [''];
+  assert.ok(localBlock.length > 0, 'local transcribe must apply hot words');
+});
+
+test('host: get-settings exposes polishPrompt and hot-word status (no content)', () => {
+  const block = src.match(/action === "get-settings"[\s\S]*?return;/) || [''];
+  assert.ok(block[0].includes('polishPrompt'), 'custom polish prompt view present');
+  assert.ok(block[0].includes('hotwords'), 'hot-word status present');
+  assert.ok(block[0].includes('hotwordsPath()'), 'hot-word path exposed so users can find the file');
+  assert.ok(block[0].includes('rules: hotwords.rules.length'), 'must expose the COUNT, not the rules themselves');
+});
+
+test('host: set-settings accepts polishPrompt with a length cap', () => {
+  assert.ok(src.includes('key !== "polishPrompt"'));
+  assert.ok(src.includes('MAX_POLISH_PROMPT_CHARS'));
+  assert.ok(src.includes('polishPrompt is too long'));
+});
+
+test('host: polish route resolves the custom prompt from settings', () => {
+  assert.ok(src.includes('prompt: resolvePolishPrompt(readSettings())'));
+  assert.ok(utilsSrc.includes('export function resolvePolishPrompt'));
+  assert.ok(utilsSrc.includes('export const DEFAULT_POLISH_PROMPT'));
+});
+
 // ---------- client-side: source shape (needs browser DOM) ----------
 test('client: loads via ModuleLoader with the registered id', () => {
   assert.ok(clientSrc.includes('window.__ModuleLoader__.load'));
@@ -360,6 +389,73 @@ test('client: cloud settings UI edits a provider chain (not a single endpoint)',
   assert.ok(clientSrc.includes('cloud.removeProvider'));
 });
 
+test('client: push-to-talk mode (hold) coexists with tap mode', () => {
+  assert.ok(clientSrc.includes('MODE_KEY = "dsh-voice-input:mode"'));
+  assert.ok(clientSrc.includes('MODES = ["tap", "hold"]'));
+  assert.ok(clientSrc.includes('function readMode()'));
+  assert.ok(clientSrc.includes('function beginHold()'));
+  assert.ok(clientSrc.includes('function endHold()'));
+  assert.ok(clientSrc.includes('readMode() === "hold"'));
+});
+
+test('client: hold mode stops on keyup and window blur', () => {
+  assert.ok(clientSrc.includes('function onKeyUp(event)'));
+  assert.ok(clientSrc.includes('matchesHoldRelease'));
+  assert.ok(clientSrc.includes('window.addEventListener("keyup", onKeyUp, true)'));
+  assert.ok(clientSrc.includes('window.addEventListener("blur", onWindowBlur)'));
+  assert.ok(clientSrc.includes('window.removeEventListener("keyup", onKeyUp, true)'));
+  assert.ok(clientSrc.includes('window.removeEventListener("blur", onWindowBlur)'));
+  assert.ok(clientSrc.includes('function onWindowBlur()'));
+});
+
+test('client: releasing before an async start lands still stops the recording', () => {
+  // getUserMedia resolves after the user may have released the key — the
+  // start path must consume holdStopPending and stop immediately.
+  assert.ok(clientSrc.includes('holdStopPending'));
+  assert.ok(/recording = true;[\s\S]{0,420}if \(holdStopPending\)/.test(clientSrc), 'startRecording must consume holdStopPending');
+  assert.ok(/wsRecording = true;[\s\S]{0,220}if \(holdStopPending\)/.test(clientSrc), 'startWebSpeech must consume holdStopPending');
+});
+
+test('client: mic button mirrors the hold gesture in hold mode', () => {
+  assert.ok(clientSrc.includes('pressProps'));
+  assert.ok(clientSrc.includes('onPointerDown'));
+  assert.ok(clientSrc.includes('onPointerUp'));
+  assert.ok(clientSrc.includes('onPointerLeave'));
+  assert.ok(clientSrc.includes('mic.tooltipHold'));
+});
+
+test('client: hold-mode recording status says 松开结束', () => {
+  assert.ok(clientSrc.includes('readMode() === "hold" ? "松开结束" : "再按一次结束"'));
+});
+
+test('client: recording level meter (Web Audio analyser) with full teardown', () => {
+  assert.ok(clientSrc.includes('function startLevelMeter'));
+  assert.ok(clientSrc.includes('function stopLevelMeter'));
+  assert.ok(clientSrc.includes('createAnalyser'));
+  assert.ok(clientSrc.includes('getByteFrequencyData'));
+  assert.ok(clientSrc.includes('frequencyBinCount'));
+  // Teardown must run on every recording-exit path.
+  const finishBlock = clientSrc.match(/async function finishRecording[\s\S]*?if \(blob\.size < 200\)/) || [''];
+  assert.ok(finishBlock[0].includes('stopLevelMeter()'), 'finishRecording must stop the meter');
+  const stopBlock = clientSrc.match(/function stopRecording\(\)[\s\S]*?recorder\.stop\(\);[\s\S]*?\} catch \{[\s\S]*?\n\t+\}/) || [''];
+  assert.ok(stopBlock[0].includes('stopLevelMeter()'), 'stopRecording catch path must stop the meter');
+  assert.ok(/catch \{[\s\S]{0,80}stopLevelMeter\(\);/.test(clientSrc), 'startLevelMeter failure must clean up, never break recording');
+});
+
+test('client: settings UI for trigger mode, hot words and polish prompt', () => {
+  assert.ok(clientSrc.includes('writeJson(MODE_KEY, v)'));
+  assert.ok(clientSrc.includes('t("mode.title")'));
+  assert.ok(clientSrc.includes('t("hw.title")'));
+  assert.ok(clientSrc.includes('t("hw.loaded")'));
+  assert.ok(clientSrc.includes('hotwordsInfo.path'));
+  assert.ok(clientSrc.includes('setHotwordsInfo(value.hotwords)'));
+  assert.ok(clientSrc.includes('polishPromptText'));
+  assert.ok(clientSrc.includes('savePolishPrompt'));
+  assert.ok(clientSrc.includes('polishPrompt: value'));
+  assert.ok(clientSrc.includes('"textarea"'));
+  assert.ok(clientSrc.includes('t("prompt.placeholder")'));
+});
+
 // ---------- repo-level consistency ----------
 test('repo: cordis.patch.yml name matches plugin name', () => {
   const patch = fs.readFileSync(path.join(ROOT, 'cordis.patch.yml'), 'utf8');
@@ -370,7 +466,7 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.4.0', 'version should be 0.4.0, got ' + pkg.version);
+  assert.ok(pkg.version === '0.4.1', 'version should be 0.4.1, got ' + pkg.version);
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
@@ -1088,6 +1184,151 @@ async function behavioural() {
       await new Promise((r) => bad.close(r));
       await new Promise((r) => good.close(r));
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ---- hot words / regex replacement table ----
+  test('utils: parseHotwords literal + comments + blanks', () => {
+    const p = utils.parseHotwords('# 注释行\n\n中国=我果|窝果\nDeepSeek=deep seek\n');
+    assert.strictEqual(p.errors.length, 0);
+    assert.strictEqual(p.rules.length, 2);
+    assert.deepStrictEqual(p.rules[0], { kind: 'literal', wrongs: ['我果', '窝果'], right: '中国' });
+    assert.deepStrictEqual(p.rules[1], { kind: 'literal', wrongs: ['deep seek'], right: 'DeepSeek' });
+  });
+
+  test('utils: parseHotwords regex form with flags and escaped slashes', () => {
+    const p = utils.parseHotwords('/老\\s*师/老师/gi\n/a\\/b/x\n/[a-z]+/N/g\n/尾部无flags的规则/x/');
+    assert.strictEqual(p.errors.length, 0, JSON.stringify(p.errors));
+    assert.deepStrictEqual(p.rules[0], { kind: 'regex', source: '老\\s*师', flags: 'gi', replacement: '老师' });
+    assert.deepStrictEqual(p.rules[1], { kind: 'regex', source: 'a/b', flags: '', replacement: 'x' });
+    assert.deepStrictEqual(p.rules[2], { kind: 'regex', source: '[a-z]+', flags: 'g', replacement: 'N' });
+    assert.deepStrictEqual(p.rules[3], { kind: 'regex', source: '尾部无flags的规则', flags: '', replacement: 'x' });
+  });
+
+  test('utils: parseHotwords collects per-line errors instead of throwing', () => {
+    const p = utils.parseHotwords('没有等号\n/=空替换\n/[/x/g\n/坏(?P<x>)/x/g\n中国=空\n=更糟');
+    assert.strictEqual(p.rules.length, 1, 'the one valid rule still loads');
+    assert.deepStrictEqual(p.rules[0], { kind: 'literal', wrongs: ['空'], right: '中国' });
+    assert.strictEqual(p.errors.length, 5);
+    assert.strictEqual(p.errors[0].line, 1);
+    assert.strictEqual(p.errors[1].line, 2);
+  });
+
+  test('utils: parseHotwords caps the rule count', () => {
+    const lines = [];
+    for (let i = 0; i < utils.MAX_HOTWORD_RULES + 5; i++) lines.push('词' + i + '=错' + i);
+    const p = utils.parseHotwords(lines.join('\n'));
+    assert.strictEqual(p.rules.length, utils.MAX_HOTWORD_RULES);
+    assert.strictEqual(p.errors.length, 1);
+  });
+
+  test('utils: applyHotwords literal is case-insensitive and replaces all', () => {
+    const p = utils.parseHotwords('OpenAI=open ai|OPENAI2');
+    assert.strictEqual(utils.applyHotwords('open ai 和 OPENAI2 和 open ai', p.rules), 'OpenAI 和 OpenAI 和 OpenAI');
+    assert.strictEqual(utils.applyHotwords('', p.rules), '');
+    assert.strictEqual(utils.applyHotwords('无匹配', p.rules), '无匹配');
+    assert.strictEqual(utils.applyHotwords('文本', []), '文本');
+  });
+
+  test('utils: applyHotwords regex supports $1 substitution and ordering', () => {
+    const p = utils.parseHotwords('/姓名[:：]\\s*/姓名：/g\n/\\{([^}]+)\\}/【$1】/g');
+    assert.strictEqual(utils.applyHotwords('姓名: 张三 {测试}', p.rules), '姓名：张三 【测试】');
+  });
+
+  test('utils: applyHotwords applies rules in file order (later sees earlier output)', () => {
+    // Format is 正确=错误: rule 1 fixes 甲→乙, rule 2 then fixes 乙→丙.
+    const p = utils.parseHotwords('乙=甲\n丙=乙');
+    assert.strictEqual(utils.applyHotwords('甲', p.rules), '丙');
+  });
+
+  test('utils: resolvePolishPrompt default vs custom', () => {
+    assert.strictEqual(utils.resolvePolishPrompt({}), utils.DEFAULT_POLISH_PROMPT);
+    assert.strictEqual(utils.resolvePolishPrompt(null), utils.DEFAULT_POLISH_PROMPT);
+    assert.strictEqual(utils.resolvePolishPrompt({ polishPrompt: '   ' }), utils.DEFAULT_POLISH_PROMPT);
+    assert.strictEqual(utils.resolvePolishPrompt({ polishPrompt: ' 自定义提示词 ' }), '自定义提示词');
+    assert.ok(utils.DEFAULT_POLISH_PROMPT.includes('口头禅'), 'default prompt keeps the built-in behaviour');
+  });
+
+  await testAsync('utils: loadHotwords reads $DSH_HOME/voice/hot.txt with cache', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vs-hw-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    utils.clearHotwordsCache();
+    try {
+      // Missing file = no rules, no error.
+      let hw = utils.loadHotwords();
+      assert.strictEqual(hw.rules.length, 0);
+      assert.strictEqual(hw.errors.length, 0);
+      // Create the file — picked up (different signature).
+      const file = path.join(tmp, 'voice', 'hot.txt');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '中国=我果\n');
+      hw = utils.loadHotwords();
+      assert.strictEqual(hw.rules.length, 1);
+      assert.ok(hw.path.endsWith('hot.txt'), 'path should point at hot.txt: ' + hw.path);
+      // Change content with a different size — cache must invalidate.
+      fs.writeFileSync(file, '中国=我果\nDeepSeek=deep seek\n');
+      hw = utils.loadHotwords();
+      assert.strictEqual(hw.rules.length, 2);
+      // Bad line surfaces as an error, good rules still load.
+      fs.writeFileSync(file, '中国=我果\n坏行\n');
+      hw = utils.loadHotwords();
+      assert.strictEqual(hw.rules.length, 1);
+      assert.strictEqual(hw.errors.length, 1);
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      utils.clearHotwordsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('host: handleApi transcribe applies the hot-word table', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vs-hwt-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    utils.clearHotwordsCache();
+    const orig = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ text: '我果的项目是 deep seek' }) });
+    try {
+      utils.writeSettings({ asrApiKey: 'k', asrUrl: 'https://asr.example/v1' });
+      const file = path.join(tmp, 'voice', 'hot.txt');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '中国=我果\nDeepSeek=deep seek\n');
+      const { res, body } = await post(host, { action: 'transcribe', audio: Buffer.from('abc').toString('base64'), mimeType: 'audio/webm', language: '' });
+      assert.strictEqual(res._state.status, 200);
+      assert.strictEqual(body.ok, true);
+      assert.strictEqual(body.text, '中国的项目是 DeepSeek');
+    } finally {
+      globalThis.fetch = orig;
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      utils.clearHotwordsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('host: handleApi set-settings saves/clears polishPrompt (cap 400)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vs-pp-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    try {
+      const { res } = await post(host, { action: 'set-settings', patch: { polishPrompt: '  自定义提示词\n第二行  ' } });
+      assert.strictEqual(res._state.status, 200);
+      assert.strictEqual(utils.readSettings().polishPrompt, '自定义提示词\n第二行');
+      // Empty string deletes the field (back to the built-in default).
+      await post(host, { action: 'set-settings', patch: { polishPrompt: '   ' } });
+      assert.strictEqual(utils.readSettings().polishPrompt, undefined);
+      // Over-long prompt is rejected with 400.
+      const { res: res3 } = await post(host, { action: 'set-settings', patch: { polishPrompt: 'a'.repeat(utils.MAX_POLISH_PROMPT_CHARS + 1) } });
+      assert.strictEqual(res3._state.status, 400);
+      // get-settings exposes the current custom prompt (or "").
+      utils.writeSettings({ polishPrompt: '自定义' });
+      const { body } = await post(host, { action: 'get-settings' });
+      assert.strictEqual(body.value.polishPrompt, '自定义');
+      assert.ok(body.value.hotwords && typeof body.value.hotwords.path === 'string');
+      assert.strictEqual(typeof body.value.hotwords.rules, 'number');
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 }

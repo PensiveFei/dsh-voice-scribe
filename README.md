@@ -4,8 +4,8 @@
 [![release](https://img.shields.io/github/v/release/PensiveFei/dsh-voice-scribe)](https://github.com/PensiveFei/dsh-voice-scribe/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/PensiveFei/dsh-voice-scribe/ci.yml)](https://github.com/PensiveFei/dsh-voice-scribe/actions/workflows/ci.yml)
 
-DSH 专属语音输入插件：**点按 Alt 说话、再点按转文字**，插入输入框光标处。
-Voice input for DeepSeek Harness: tap Alt to talk, tap again to get text.
+DSH 专属语音输入插件：**点按或按住 Alt 说话、松开/再点按转文字**，插入输入框光标处。
+Voice input for DeepSeek Harness: tap or hold Alt to talk, get text in the composer.
 
 > ⚠️ 非官方插件，与 DeepSeek / 深度求索公司无关联。使用前请阅读 [SECURITY.md](./SECURITY.md)。
 
@@ -19,7 +19,9 @@ dsh plugin --profile web add dsh-voice-scribe   # 重启 dsh web 后生效
 
 - **麦克风按钮**：输入框右侧 🎤 图标，点击开始说话、再点停止并转写（按钮录音中变红）
 - **热键**：点输入框 → 按 **Alt** 开始说话 → 再按 **Alt** 结束并转写（备选 **Alt+空格**，设置可切换）
+- **按住说话**：设置 → 语音输入 → 触发方式 可选「按住说话」——按住热键录音、松开自动转写（麦克风按钮同样支持）
 - **实时中间结果**：说话时识别文本实时出现在草稿里（浏览器引擎逐字、本地引擎每 3 秒刷新），停止后替换为最终结果
+- **录音电平指示**：录音中状态条下方显示实时电平条
 
 ## 识别引擎 Engine（默认「自动」，零配置）
 
@@ -37,6 +39,26 @@ dsh plugin --profile web add dsh-voice-scribe   # 重启 dsh web 后生效
 ## 识别语言 Languages
 
 支持 **中文 / English / 粤语 / 日本語 / 한국어**（设置 → 语音输入 可选）。本地离线识别自动检测语言；所选语言作用于浏览器与云端识别。
+
+## 热词替换表 Hot Words（可选）
+
+把识别错的人名、术语、项目名替换回来：编辑 `$DSH_HOME/voice/hot.txt`（每行一条，修改后下次转写生效）：
+
+```
+# 字面替换（不区分大小写）：正确词=错误词1|错误词2
+DeepSeek=deep seek|迪普西克
+王小明=王小铭
+
+# 正则替换（标准 $1 语义）
+/老\s*师/老师/
+/\{(\w+)\}/【$1】/
+```
+
+设置 → 语音输入 页面会显示热词表状态（规则条数 / 文件路径 / 解析错误）。云端与本地离线引擎的转写结果统一应用。
+
+## 自定义润色提示词（可选）
+
+设置 → 语音输入 → 开启润色后，可自定义润色提示词（多行，保存在服务端）；留空或「恢复默认」使用内置的最小必要修正提示词。
 
 ## 隐私 Privacy
 
