@@ -16,8 +16,7 @@
     "README.md",
     "CHANGELOG.md",
     "SECURITY.md",
-    "CONTRIBUTING.md",
-    "tests"
+    "CONTRIBUTING.md"
   ],
   "dependencies": {
     "sherpa-onnx-node": "^1.13.5"
