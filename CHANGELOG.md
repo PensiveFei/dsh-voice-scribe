@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.2] — 2026-08-30
+
+### Added
+
+- **本地规则预润色（LLM 前，省 token）**：润色时会先做一步确定性本地预处理——去掉「嗯/呃」等无歧义口头禅、折叠多余空格，再把更短更干净的文本交给 LLM；LLM 失败时仍保留原始转写
+- **README 与同类插件对比**：新增「与同类插件对比」小节，与 dsh-better-input 逐项对照（本地离线识别 / 云端 ASR 服务链 / 热词表 / 本地预润色等）
+
+### Changed
+
+- **不再随 npm 包发布 `tests/`**：`package.json` 的 `files` 字段移除 `tests`，测试文件（含测试用的本地 HTTP 服务器）不再进入发布的包，降低 dsh.so 静态扫描的风险分
+- **`local-asr.js` 改用 sherpa-onnx 主入口**：`require("sherpa-onnx-node/non-streaming-asr.js")` → `require("sherpa-onnx-node")`，不再深入依赖内部子路径
+
 ## [0.4.1] — 2026-08-29
 
 ### Added

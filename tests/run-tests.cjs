@@ -61,6 +61,11 @@ test('host: polish failure keeps raw transcript', () => {
   assert.ok(src.includes('return raw; // any polish failure → keep the raw transcript'));
 });
 
+test('host: polishText pre-cleans with localPolish before the LLM', () => {
+  assert.ok(src.includes('const cleaned = localPolish(raw);'), 'local pre-polish must run before the LLM call');
+  assert.ok(src.includes('text: cleaned'), 'the LLM must receive the locally-cleaned text');
+});
+
 test('host: 413 overflow path is reachable (no hang, real response)', () => {
   // Regression for the old destroy-and-never-resolve hang: readJsonBody must
   // resolve a sentinel and handleApi must answer 413 with Connection: close.
@@ -466,7 +471,7 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.4.1', 'version should be 0.4.1, got ' + pkg.version);
+  assert.ok(pkg.version === '0.4.2', 'version should be 0.4.2, got ' + pkg.version);
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
@@ -1247,6 +1252,21 @@ async function behavioural() {
     assert.strictEqual(utils.resolvePolishPrompt({ polishPrompt: '   ' }), utils.DEFAULT_POLISH_PROMPT);
     assert.strictEqual(utils.resolvePolishPrompt({ polishPrompt: ' 自定义提示词 ' }), '自定义提示词');
     assert.ok(utils.DEFAULT_POLISH_PROMPT.includes('口头禅'), 'default prompt keeps the built-in behaviour');
+  });
+
+  test('utils: localPolish strips fillers and normalises whitespace', () => {
+    assert.strictEqual(utils.localPolish('嗯嗯 我觉得 呃 这个 很好用'), '我觉得 这个 很好用。');
+    assert.strictEqual(utils.localPolish('就是就是 那个那个 然后呢 开始'), '开始。');
+    assert.strictEqual(utils.localPolish('Hello 嗯 world'), 'Hello world.');
+    assert.strictEqual(utils.localPolish('   '), '');
+    assert.strictEqual(utils.localPolish(null), '');
+    assert.strictEqual(utils.localPolish(123), '');
+  });
+
+  test('utils: localPolish keeps content words and existing punctuation', () => {
+    assert.strictEqual(utils.localPolish('好了。'), '好了。');
+    assert.strictEqual(utils.localPolish('这个很好，那个也不错！'), '这个很好，那个也不错！');
+    assert.strictEqual(utils.localPolish('好啊'), '好啊。');
   });
 
   await testAsync('utils: loadHotwords reads $DSH_HOME/voice/hot.txt with cache', async () => {
