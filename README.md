@@ -5,6 +5,9 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/PensiveFei/dsh-voice-scribe/ci.yml)](https://github.com/PensiveFei/dsh-voice-scribe/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/dsh-voice-scribe)](https://www.npmjs.com/package/dsh-voice-scribe)
 [![npm downloads](https://img.shields.io/npm/dw/dsh-voice-scribe)](https://www.npmjs.com/package/dsh-voice-scribe)
+[![dsh.so risk](https://www.dsh.so/badge/dsh-voice-scribe.svg)](https://www.dsh.so/artifact/dsh-voice-scribe/)
+[![dsh.so install](https://www.dsh.so/badge/install/dsh-voice-scribe.svg)](https://www.dsh.so/artifact/dsh-voice-scribe/)
+[![Listed in awesome-dsh-plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com/p/PensiveFei/dsh-voice-scribe/)
 
 DSH 专属语音输入插件：**点按或按住 Alt 说话、松开/再点按转文字**，插入输入框光标处。
 Voice input for DeepSeek Harness: tap or hold Alt to talk, get text in the composer.
