@@ -19,7 +19,7 @@
     "CONTRIBUTING.md"
   ],
   "dependencies": {
-    "sherpa-onnx-node": "^1.13.5"
+    "sherpa-onnx-node": "^1.13.6"
   },
   "scripts": {
     "test": "node tests/run-tests.cjs",
