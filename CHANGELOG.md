@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.3] — 2026-08-31
+
+### Changed
+
+- **声明 `@deepseek-ai/dsh-llm` 为 peerDependency（`>=0.1.2-alpha.2`）**：润色路径在运行时懒加载 `createUserMessage`，此前依赖宿主 profile 传递提供；显式声明后，新版本 harness（0.1.2-alpha）下 peer 解析明确、不再靠运气。
+
+### Fixed
+
+- 无（仅依赖声明调整）。
+
 ## [0.4.2] — 2026-08-30
 
 ### Added

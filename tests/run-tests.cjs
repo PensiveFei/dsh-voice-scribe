@@ -471,7 +471,7 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.4.2', 'version should be 0.4.2, got ' + pkg.version);
+  assert.ok(pkg.version === '0.4.3', 'version should be 0.4.3, got ' + pkg.version);
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
