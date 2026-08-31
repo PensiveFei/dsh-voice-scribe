@@ -1146,32 +1146,41 @@ async function behavioural() {
   });
 
   await testAsync('local-asr: startModelDownload falls back across mirrors, no junk left', async () => {
-    const http = require('node:http');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-dl-'));
     const payload = Buffer.alloc(256 * 1024, 7); // chunked to exercise the stream loop
-    const bad = http.createServer((req, res) => { res.writeHead(404); res.end('nope'); });
-    const good = http.createServer((req, res) => {
-      if (req.url.endsWith('/tokens.txt')) { res.writeHead(200, { 'content-length': 5 }); res.end('a b c'); return; }
-      if (req.url.endsWith('/model.int8.onnx')) {
-        res.writeHead(200, { 'content-length': payload.length });
-        const step = 32 * 1024;
-        let off = 0;
-        const timer = setInterval(() => {
-          if (off >= payload.length) { clearInterval(timer); res.end(); return; }
-          res.write(payload.subarray(off, off + step));
-          off += step;
-        }, 5);
-        return;
-      }
-      res.writeHead(404); res.end();
-    });
-    await new Promise((r) => bad.listen(0, '127.0.0.1', r));
-    await new Promise((r) => good.listen(0, '127.0.0.1', r));
+    // Mock the global fetch instead of spinning up real HTTP servers: the first
+    // mirror always 404s, the second serves tokens.txt + the model in chunks.
+    // Deterministic, no sockets/ports — and no node:http anywhere in the repo.
+    const BAD = 'http://bad-mirror.invalid';
+    const GOOD = 'http://good-mirror.invalid';
+    const step = 32 * 1024;
+    const chunks = [];
+    for (let off = 0; off < payload.length; off += step) chunks.push(payload.subarray(off, off + step));
+
+    function fakeResponse(status, bodyChunks, contentLength) {
+      let i = 0;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        headers: { get: (name) => (name.toLowerCase() === 'content-length' ? String(contentLength ?? '') : null) },
+        body: {
+          getReader: () => ({
+            read: async () => (i < bodyChunks.length ? { done: false, value: bodyChunks[i++] } : { done: true, value: undefined })
+          })
+        }
+      };
+    }
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.startsWith(BAD)) return fakeResponse(404, [], 0);
+      if (u.endsWith('/tokens.txt')) return fakeResponse(200, [Buffer.from('a b c')], 5);
+      if (u.endsWith('/model.int8.onnx')) return fakeResponse(200, chunks, payload.length);
+      return fakeResponse(404, [], 0);
+    };
     try {
-      const mirrors = [
-        'http://127.0.0.1:' + bad.address().port,
-        'http://127.0.0.1:' + good.address().port
-      ];
+      const mirrors = [BAD, GOOD];
       const start = await local.startModelDownload(dir, mirrors);
       assert.strictEqual(start.ok, true);
       assert.strictEqual(start.started, true);
@@ -1186,8 +1195,7 @@ async function behavioural() {
       const junk = fs.readdirSync(dir).filter((f) => f.includes('.part'));
       assert.deepStrictEqual(junk, [], 'no .part/.part.fail junk left: ' + junk.join(','));
     } finally {
-      await new Promise((r) => bad.close(r));
-      await new Promise((r) => good.close(r));
+      globalThis.fetch = realFetch;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
