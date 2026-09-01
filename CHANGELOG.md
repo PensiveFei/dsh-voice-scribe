@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.5] — 2026-09-01
+
+### Changed
+
+- **插件安装不再拖入 DSH 核心包树（重要）**：`@deepseek-ai/dsh-llm` 改为**可选 peer**（新增 `peerDependenciesMeta.optional`）。npm 7 起默认自动安装 peerDependencies，此前 `npm install dsh-voice-scribe` 会连带装入 `@deepseek-ai/dsh-llm`、`cordis`、`cosmokit`、`dsh-brand`、`dsh-invariants`、`dsh-timeout`、`dsh-typert-protocol`、`dsh-util-crypto`、`dsh-util-values`、`schemastery` 等**共 15 个包**——在已运行某一核心版本的宿主里并排装出第二套核心，正是「作用域符号对不上、新建会话报 unscoped context」的成因。改为可选 peer 后，同样的安装从 **15 个包降到 1 个**。
+- **peer 版本下界放宽**：`>=0.1.2-alpha.2` → `>=0.1.0-rc.6`。原下界把 `0.1.0-rc.x` 系列的宿主全部排除在外（`0.1.0-rc.7` 并不满足 `>=0.1.2-alpha.2`），这些用户会一直收到 peer 不满足告警。润色路径本就是运行时懒加载、失败自动降级返回原始转写，声明为可选也更贴合真实行为。
+- **`sherpa-onnx-node` 移入 `optionalDependencies`**：本地离线识别只是三个引擎之一，而该包含平台原生二进制、并非所有平台都有预编译产物。此前它是硬依赖，装不上就整个插件装不上——即便用户只想用云端 ASR 或浏览器 Web Speech。现在缺失不再中断安装。
+
+### Fixed
+
+- **本地引擎缺少原生绑定时的报错**：`require("sherpa-onnx-node")` 失败此前抛出的是识别器加载深处的 `MODULE_NOT_FOUND` 堆栈；现在转为 `code: "local-engine-unavailable"` 与明确提示（改用云端 ASR 或 Web Speech）。
+
+### Changed
+
+- 测试 141 → **143**：新增「清单不得拖入核心包树」「缺少原生绑定须优雅降级」两条回归。
+
 ## [0.4.4] — 2026-09-01
 
 ### Fixed

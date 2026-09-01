@@ -471,10 +471,38 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.4.4', 'version should be 0.4.4, got ' + pkg.version);
+  assert.ok(pkg.version === '0.4.5', 'version should be 0.4.5, got ' + pkg.version);
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
+});
+
+test('repo: the manifest cannot drag the DSH core tree into a plugin install', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  // npm 7+ auto-installs peerDependencies. With a bare peer on
+  // @deepseek-ai/dsh-llm, "npm install dsh-voice-scribe" pulled in 15 packages
+  // including a whole parallel @deepseek-ai core tree — which is exactly how a
+  // host running one core version ends up with two and stops booting.
+  // Declaring the peer optional takes that same install from 15 packages to 1.
+  assert.ok(pkg.peerDependenciesMeta, 'peerDependenciesMeta must exist');
+  for (const name of Object.keys(pkg.peerDependencies || {})) {
+    const meta = pkg.peerDependenciesMeta[name];
+    assert.ok(meta && meta.optional === true, name + ' must be declared an OPTIONAL peer');
+  }
+  // The native ASR binding has no prebuild for every platform, and only the
+  // local engine needs it — a missing one must not fail the whole install.
+  assert.ok(!(pkg.dependencies && pkg.dependencies['sherpa-onnx-node']),
+    'sherpa-onnx-node must not be a hard dependency');
+  assert.ok(pkg.optionalDependencies && pkg.optionalDependencies['sherpa-onnx-node'],
+    'sherpa-onnx-node must be an optionalDependency');
+});
+
+test('local-asr: a missing native binding degrades with a clear code', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'lib', 'local-asr.js'), 'utf8');
+  // Unguarded, this is an opaque MODULE_NOT_FOUND from deep inside the
+  // recognizer load — a stack trace about an engine the user never chose.
+  assert.ok(/catch \(cause\) \{/.test(src), 'the sherpa require must be guarded');
+  assert.ok(/local-engine-unavailable/.test(src), 'a dedicated error code must be set');
 });
 
 // ---------- docs: unofficial note + SECURITY pointer ----------
