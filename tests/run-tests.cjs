@@ -471,7 +471,7 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.4.5', 'version should be 0.4.5, got ' + pkg.version);
+  assert.ok(pkg.version === '0.4.6', 'version should be 0.4.6, got ' + pkg.version);
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
@@ -495,6 +495,15 @@ test('repo: the manifest cannot drag the DSH core tree into a plugin install', (
     'sherpa-onnx-node must not be a hard dependency');
   assert.ok(pkg.optionalDependencies && pkg.optionalDependencies['sherpa-onnx-node'],
     'sherpa-onnx-node must be an optionalDependency');
+  // semver's prerelease rule: a range that contains a prerelease admits
+  // prereleases ONLY for that exact major.minor.patch tuple. So ">=0.1.0-rc.6"
+  // covers 0.1.0-rc.x but NOT 0.1.2-alpha.x, and ">=0.1.2-alpha.2" covers the
+  // alpha line but NOT any 0.1.0-rc.x host. Both DSH lines are in the wild, so
+  // the range must name both explicitly or one group gets a permanent
+  // unmet-peer warning.
+  const llm = pkg.peerDependencies['@deepseek-ai/dsh-llm'];
+  assert.ok(/0\.1\.0-rc/.test(llm), 'peer range must admit the 0.1.0-rc line: ' + llm);
+  assert.ok(/0\.1\.2-alpha/.test(llm), 'peer range must admit the 0.1.2-alpha line: ' + llm);
 });
 
 test('local-asr: a missing native binding degrades with a clear code', () => {

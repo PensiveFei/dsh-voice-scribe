@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.6] — 2026-09-01
+
+### Fixed
+
+- **peer 版本范围补上 `0.1.2-alpha` 线（修 0.4.5 的疏漏）**：0.4.5 把范围从 `>=0.1.2-alpha.2` 改成 `>=0.1.0-rc.6`，只是把「排除 rc 线」换成了「排除 alpha 线」。根因是 semver 的预发布规则——**含预发布号的范围只对同一个 `major.minor.patch` 元组放行预发布版本**，所以 `>=0.1.0-rc.6` 匹配 `0.1.0-rc.7` 却不匹配 `0.1.2-alpha.4`。实测确认：
+
+  | 范围 | 0.1.0-rc.7 | 0.1.2-alpha.4 |
+  | --- | --- | --- |
+  | `>=0.1.2-alpha.2`（0.4.4 及更早） | ❌ | ✅ |
+  | `>=0.1.0-rc.6`（0.4.5） | ✅ | ❌ |
+  | `>=0.1.0-rc.6 \|\| >=0.1.2-alpha.0`（本版） | ✅ | ✅ |
+
+  两条线的宿主都在实际使用中，所以范围必须**显式列出两者**，否则总有一批用户收到永久的 unmet peer 告警。新增回归测试断言范围同时覆盖两条线。
+
 ## [0.4.5] — 2026-09-01
 
 ### Changed
