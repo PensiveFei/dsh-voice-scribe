@@ -471,7 +471,7 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.4.3', 'version should be 0.4.3, got ' + pkg.version);
+  assert.ok(pkg.version === '0.4.4', 'version should be 0.4.4, got ' + pkg.version);
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
@@ -1358,6 +1358,138 @@ async function behavioural() {
       if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  // ── 0.4.4 regressions ─────────────────────────────────────────────────────
+  // Every test below reproduces a bug that shipped in 0.4.3 and that the
+  // existing 133 tests did NOT catch. They are the point of this release.
+
+  test('utils: applyHotwords literal survives regex metacharacters', () => {
+    // escapeRegExp's replacement argument had been clobbered by a stray
+    // find-and-replace ("\\$&" -> a section-header comment). The result was
+    // still a VALID regex, so nothing ever threw — the rule just silently
+    // stopped matching, which is precisely what a hot-word table is for
+    // (C++, 3.14, Node.js, C#).
+    const p = utils.parseHotwords('对=3.14\n修正=C++\n括号=(a)');
+    assert.strictEqual(p.errors.length, 0);
+    assert.strictEqual(utils.applyHotwords('价格是3.14', p.rules), '价格是对');
+    assert.strictEqual(utils.applyHotwords('C++ 很快', p.rules), '修正 很快');
+    assert.strictEqual(utils.applyHotwords('这是(a)结尾', p.rules), '这是括号结尾');
+    // "." must stay a literal dot, not "any character".
+    assert.strictEqual(utils.applyHotwords('3x14', p.rules), '3x14');
+  });
+
+  await testAsync('utils: a key-less multi-provider chain still reports asr-key-missing', async () => {
+    const settings = {
+      asrProviders: [
+        { url: 'https://a.example/v1/audio/transcriptions', model: 'm', key: '' },
+        { url: 'https://b.example/v1/audio/transcriptions', model: 'm', key: '' }
+      ]
+    };
+    let code = null;
+    try {
+      await utils.transcribeAudio({
+        audioBase64: Buffer.from('x').toString('base64'),
+        mimeType: 'audio/webm', language: '', settings
+      });
+    } catch (e) { code = e && e.code; }
+    // Was "asr-failed" as soon as there were 2+ rows, so the client never
+    // showed its "configure your API key" guidance.
+    assert.strictEqual(code, 'asr-key-missing');
+  });
+
+  await testAsync('utils: an aborted client stops the ASR failover chain', async () => {
+    const settings = {
+      asrProviders: [
+        { url: 'https://a.example/v1/audio/transcriptions', model: 'm', key: 'k1' },
+        { url: 'https://b.example/v1/audio/transcriptions', model: 'm', key: 'k2' }
+      ]
+    };
+    const ac = new AbortController();
+    ac.abort();
+    let calls = 0;
+    const realFetch = global.fetch;
+    global.fetch = async () => { calls++; throw new Error('must not be reached'); };
+    try {
+      let code = null;
+      try {
+        await utils.transcribeAudio({
+          audioBase64: Buffer.from('x').toString('base64'),
+          mimeType: 'audio/webm', language: '', settings, signal: ac.signal
+        });
+      } catch (e) { code = e && e.code; }
+      assert.strictEqual(code, 'asr-aborted');
+      assert.strictEqual(calls, 0, 'no provider may be contacted after the client hung up');
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  await testAsync('local-asr: a failing .part write is reported, not thrown at the process', async () => {
+    const asr = await import(pathToFileURL(path.join(ROOT, 'lib', 'local-asr.js')).href);
+    for (let i = 0; i < 200 && asr.getDownloadState().running; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-dl-'));
+    // A DIRECTORY sitting where the .part file must go: createWriteStream
+    // emits "error" asynchronously. With no lifetime 'error' listener that
+    // was an UNCAUGHT exception — it killed the whole host process instead of
+    // failing over to the next mirror.
+    fs.mkdirSync(path.join(tmp, 'tokens.txt.part'));
+    const realFetch = global.fetch;
+    global.fetch = async () => new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    try {
+      const started = await asr.startModelDownload(tmp, ['https://mirror.invalid/a']);
+      assert.strictEqual(started.ok, true);
+      for (let i = 0; i < 200 && asr.getDownloadState().running; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const state = asr.getDownloadState();
+      assert.strictEqual(state.running, false);
+      assert.ok(state.error !== '', 'the write failure must surface as downloadState.error');
+    } finally {
+      global.fetch = realFetch;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('client: cloudHasKey is declared before it is used', () => {
+    // An undefined cloudHasKey threw ReferenceError while rendering the
+    // settings row — for exactly the users who need to configure a key.
+    const decl = clientSrc.indexOf('const cloudHasKey =');
+    const use = clientSrc.indexOf('cloudHasKey ? ""');
+    assert.ok(decl !== -1, 'cloudHasKey must be declared');
+    assert.ok(use !== -1 && decl < use, 'the declaration must precede the use');
+  });
+
+  test('client: startRecording guards re-entry before the getUserMedia await', () => {
+    // "recording" only flips true AFTER getUserMedia resolves, so a second Alt
+    // tap during the permission prompt started a second stream + recorder and
+    // leaked the first one's tracks — the microphone stayed live.
+    assert.ok(/let startPending = false;/.test(clientSrc));
+    assert.ok(/if \(recording \|\| startPending\) return false;/.test(clientSrc));
+    assert.ok(/startPending = true;/.test(clientSrc));
+    assert.ok(/finally \{\s*startPending = false;/.test(clientSrc));
+  });
+
+  test('client: the draft is only rolled back when a preview was written', () => {
+    // recDraftBase is initialised to "", so "!== undefined" was ALWAYS true: a
+    // failed cloud transcription silently wiped whatever the user typed while
+    // the recording was being transcribed.
+    assert.ok(!/if \(recDraftBase !== undefined\) setDraftText/.test(clientSrc),
+      'the unconditional rollback must be gone');
+    assert.ok(/let previewWritten = false;/.test(clientSrc));
+    const gated = clientSrc.match(/if \(previewWritten\) setDraftText\(recDraftBase\);/g) || [];
+    assert.ok(gated.length >= 3, 'every failure path must gate the rollback on previewWritten');
+  });
+
+  test('client: the final transcript replaces the preview instead of appending', () => {
+    // The old branch also required a draft channel; without one the preview
+    // landed in the textarea through the DOM fallback and the final transcript
+    // was appended on top of it, duplicating the text.
+    assert.ok(!/effectiveEngine\(\) === "local" && draftChannel/.test(clientSrc),
+      'the insert decision must not depend on the draft channel');
+    assert.ok(/if \(previewWritten\) \{[\s\S]{0,240}setDraftText\(recDraftBase \+ sep \+ text\)/.test(clientSrc));
   });
 }
 

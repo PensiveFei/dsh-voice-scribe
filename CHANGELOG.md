@@ -3,6 +3,26 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.4] — 2026-09-01
+
+### Fixed
+
+- **热词表对含正则元字符的词完全失效（高危）**：`escapeRegExp` 的替换参数被一次失手的全局替换覆盖成了一行注释文本，转义后的规则仍是**合法正则**，所以既不报错也不匹配——`C++`、`3.14`、`Node.js`、`C#` 这类恰恰最需要纠正的词被静默跳过。已恢复为 `"\\$&"`，并修复被同一次事故污染的 JSDoc。
+- **本地模型下载遇到磁盘写错误会拖垮整个宿主进程（高危）**：`.part` 写入流全程没有 `error` 监听，磁盘写满（230MB 模型）、杀软锁文件等情况下 Node 以「Unhandled 'error' event」抛出**未捕获异常**，DSH 宿主直接退出，镜像回退逻辑根本轮不到执行。现在写入流全生命周期挂有监听，错误转为正常拒绝并进入既有的镜像回退。
+- **云端引擎设置页崩溃（高危）**：`cloudHasKey` 从未声明，引擎选到 `cloud-asr` 时渲染即抛 `ReferenceError`，恰好让唯一需要填 API Key 的用户打不开配置表单。
+- **连点两次 Alt 会泄漏麦克风（高危）**：`recording` 标志在 `await getUserMedia` **之后**才置位，而首次授权弹窗可停留数秒，远超热键去抖；期间再按一次会启动第二个录音流与录音器，第一个流的 tracks 永不释放（麦克风持续开启），两个录音器还会把数据混进同一个缓冲区。新增同步 in-flight 闸。
+- **转写失败会吞掉用户手打的文字**：`recDraftBase` 初值为 `""`，故 `!== undefined` 恒真，即使云端引擎从未写过实时预览也会执行草稿回滚——用户在长达 75 秒转写期间输入的内容被静默清空。回滚现在只在确实写过预览时发生。
+- **无草稿通道时转写文本重复**：终稿插入此前同时要求「本地引擎 + 存在草稿通道」，缺通道时预览经 DOM 兜底写入 textarea，终稿却走追加路径，导致预览与终稿叠加。判断依据改为「是否真的写过预览」。
+- **浏览器断开后仍跑完整条云端 ASR 回退链**：已 abort 的 `AbortSignal` 不会为随后注册的监听器再次触发 `abort`，故转发失效；失败链循环也不检查 `signal.aborted`，最坏情况在客户端早已离开后继续 POST 每一个 provider（4 × 60s）。现在循环遇 abort 即停，并新增 `asr-aborted` 错误码（此前被误报为 `asr-timeout`）。
+- **多 provider 全都缺 key 时错误码退化**：守卫多写了 `failures.length === 1`，与其上方注释相矛盾，导致 2 个及以上 provider 均未配 key 时错误码退化为 `asr-failed`，前端「去设置里填 API Key」的引导不再出现。
+
+### Changed
+
+- `sherpa-onnx-node` 升级到 `^1.13.7`。
+- `lib/*.js` 增加 `SPDX-License-Identifier: MIT` 头，`files` 显式包含 `LICENSE`（便于基于文件扫描的合规工具直接断言许可证）。
+- 测试从 133 增至 **141**：上述每条缺陷都补了回归测试，且已验证它们在 0.4.3 代码上全部失败（其中模型下载那条会直接让测试进程崩溃）。
+- 移除仓库中最后的 `node:http` 引用（0.4.3 之后的纯 git 提交，本次随包发布）。
+
 ## [0.4.3] — 2026-08-31
 
 ### Changed
