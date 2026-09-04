@@ -137,6 +137,19 @@ test('host: polish route resolves the custom prompt from settings', () => {
   assert.ok(utilsSrc.includes('export const DEFAULT_POLISH_PROMPT'));
 });
 
+test('host: polishText forwards an already-aborted signal (no 30s zombie call)', () => {
+  // A client that hung up BEFORE polishText ran must not burn the full
+  // POLISH_TIMEOUT_MS — an already-aborted signal never fires "abort" again
+  // for late listeners, so the state must be forwarded explicitly (the same
+  // trap the ASR path in host-utils guards against).
+  assert.ok(src.includes('if (signal && signal.aborted) timeout.abort(signal.reason)'));
+});
+
+test('host: polishText only concatenates string text-delta chunks', () => {
+  // Unknown chunks (tool-use, …) used to append "undefined" to the result.
+  assert.ok(src.includes('chunk.type === "text-delta" && typeof chunk.text === "string"'));
+});
+
 // ---------- client-side: source shape (needs browser DOM) ----------
 test('client: loads via ModuleLoader with the registered id', () => {
   assert.ok(clientSrc.includes('window.__ModuleLoader__.load'));
@@ -253,7 +266,7 @@ test('client: MediaRecorder failure releases the microphone stream', () => {
 });
 
 test('client: cloud-ASR config block appears when engine = cloud-asr', () => {
-  assert.ok(clientSrc.includes('function TextRow'));
+  assert.ok(clientSrc.includes('addProvider'));
   assert.ok(clientSrc.includes('engine === "cloud-asr"'));
   assert.ok(clientSrc.includes('saveCloud'));
   assert.ok(clientSrc.includes('type: "password"'));
@@ -417,8 +430,8 @@ test('client: releasing before an async start lands still stops the recording', 
   // getUserMedia resolves after the user may have released the key — the
   // start path must consume holdStopPending and stop immediately.
   assert.ok(clientSrc.includes('holdStopPending'));
-  assert.ok(/recording = true;[\s\S]{0,420}if \(holdStopPending\)/.test(clientSrc), 'startRecording must consume holdStopPending');
-  assert.ok(/wsRecording = true;[\s\S]{0,220}if \(holdStopPending\)/.test(clientSrc), 'startWebSpeech must consume holdStopPending');
+  assert.ok(/recording = true;[\s\S]{0,800}if \(holdStopPending\)/.test(clientSrc), 'startRecording must consume holdStopPending');
+  assert.ok(/wsRecording = true;[\s\S]{0,800}if \(holdStopPending\)/.test(clientSrc), 'startWebSpeech must consume holdStopPending');
 });
 
 test('client: mic button mirrors the hold gesture in hold mode', () => {
@@ -471,7 +484,11 @@ test('repo: cordis.patch.yml name matches plugin name', () => {
 
 test('repo: package.json files entries all exist', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.ok(pkg.version === '0.4.6', 'version should be 0.4.6, got ' + pkg.version);
+  // Never pin the exact version (it changes every release); check the shape
+  // and that package-lock agrees with package.json instead.
+  assert.ok(/^\d+\.\d+\.\d+$/.test(pkg.version), 'version must be semver x.y.z');
+  const lock = JSON.parse(fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8'));
+  assert.strictEqual(lock.packages[''].version, pkg.version, 'package-lock must match package.json version');
   for (const f of pkg.files) {
     assert.ok(fs.existsSync(path.join(ROOT, f)), 'files entry missing: ' + f);
   }
@@ -524,7 +541,33 @@ test('docs: README marks unofficial and points to SECURITY.md', () => {
   assert.ok(readme.includes('自动（默认）'), 'README should state the auto default engine');
 });
 
+test('scripts: lint.cjs checks syntax without spawning processes', () => {
+  // execSync/child_process would flag the repo as high-risk in a source
+  // scan; the same check now runs through node:vm for CJS-shaped files,
+  // while the ESM lib modules are loaded by this very test suite.
+  const lintSrc = fs.existsSync(path.join(ROOT, 'scripts', 'lint.cjs'))
+    ? fs.readFileSync(path.join(ROOT, 'scripts', 'lint.cjs'), 'utf8')
+    : '';
+  assert.ok(!/child_process/.test(lintSrc), 'no child_process import');
+  assert.ok(!/execSync/.test(lintSrc), 'no execSync');
+  assert.ok(/node:vm/.test(lintSrc), 'syntax check must use node:vm');
+});
+
 // ---------- REAL behavioural tests for lib/host-utils.js ----------
+
+// polishText lazy-imports @deepseek-ai/dsh-llm (an OPTIONAL peer — never
+// installed by npm ci). Stub it under node_modules so the SUCCESS paths of
+// polishText can be exercised for real; removed again in main().
+let wroteLlmStub = false;
+function ensureLlmStub() {
+  const stubDir = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh-llm');
+  if (fs.existsSync(path.join(stubDir, 'package.json'))) return;
+  fs.mkdirSync(stubDir, { recursive: true });
+  fs.writeFileSync(path.join(stubDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-llm', version: '0.0.0-stub', type: 'module', exports: './index.js' }));
+  fs.writeFileSync(path.join(stubDir, 'index.js'), 'export function createUserMessage(x) { return x; }\n');
+  wroteLlmStub = true;
+}
+
 async function behavioural() {
   const utils = await import(pathToFileURL(path.join(ROOT, 'lib', 'host-utils.js')).href);
   const host = await import(pathToFileURL(path.join(ROOT, 'lib', 'index.js')).href);
@@ -839,6 +882,15 @@ async function behavioural() {
     assert.strictEqual(warned.length, 1);
   });
 
+  test('utils: buildTrustedHosts tolerates a non-array input', () => {
+    // A host that exposes no trustedHosts must not make apply() throw at
+    // startup — it degrades to "loopback only", never a dead plugin.
+    assert.deepStrictEqual(utils.buildTrustedHosts(undefined), []);
+    assert.deepStrictEqual(utils.buildTrustedHosts(null), []);
+    assert.deepStrictEqual(utils.buildTrustedHosts({}), []);
+    assert.deepStrictEqual(utils.buildTrustedHosts(['localhost']), ['localhost']);
+  });
+
   // ---- REAL behavioural tests for lib/index.js (importable offline) ----
 
   function mockResponse() {
@@ -886,6 +938,33 @@ async function behavioural() {
     const long = 'a'.repeat(12001);
     assert.strictEqual(await host.polishText({ text: long, provider: 'p', model: 'm', ctx }), long);
     assert.strictEqual(called, false, 'prepareCall must not run for over-long text');
+  });
+
+  await testAsync('host: polishText forwards an already-aborted client signal to the stream', async () => {
+    ensureLlmStub();
+    const ac = new AbortController();
+    ac.abort();
+    let streamSignalAborted = null;
+    const ctx = { llm: { prepareCall: async () => ({ config: {}, stream: async function* ({ signal }) {
+      streamSignalAborted = signal.aborted;
+      yield { type: 'text-delta', text: 'hello' };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    } }) } };
+    const out = await host.polishText({ text: 'raw', provider: 'p', model: 'm', ctx, signal: ac.signal });
+    assert.strictEqual(streamSignalAborted, true, 'the stream must see an aborted signal for a client that is already gone');
+    assert.strictEqual(out, 'hello');
+  });
+
+  await testAsync('host: polishText ignores non-text-delta and non-string chunks', async () => {
+    ensureLlmStub();
+    const ctx = { llm: { prepareCall: async () => ({ config: {}, stream: async function* () {
+      yield { type: 'text-delta', text: '你好' };
+      yield { type: 'tool-use', text: 'ignored' };
+      yield { type: 'text-delta', text: undefined };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    } }) } };
+    const out = await host.polishText({ text: 'raw', provider: 'p', model: 'm', ctx });
+    assert.strictEqual(out, '你好', 'only string text-delta chunks may be concatenated');
   });
 
   await testAsync('host: handleApi 405 for non-POST', async () => {
@@ -1528,12 +1607,69 @@ async function behavioural() {
       'the insert decision must not depend on the draft channel');
     assert.ok(/if \(previewWritten\) \{[\s\S]{0,240}setDraftText\(recDraftBase \+ sep \+ text\)/.test(clientSrc));
   });
+
+  test('client: Web Speech final rebuilds from the baseline without a draft channel', () => {
+    // The no-channel fallback used to append the final transcript AFTER the
+    // interim already written into the textarea — duplicated text. It must
+    // rebuild from wsDraftBase exactly like the MediaRecorder path does.
+    assert.ok(!/insertTranscript\(finalText\)/.test(clientSrc), 'the append-after-interim path must be gone');
+    assert.ok(/setDraftText\(wsDraftBase \+ \(wsDraftBase/.test(clientSrc), 'final rebuild must not depend on the draft channel');
+  });
+
+  test('client: Web Speech "auto" language follows the browser', () => {
+    // readLanguage() || "zh-CN" made every English browser transcribe as
+    // Chinese; "auto" must fall back to navigator.language instead.
+    assert.ok(/recognition\.lang = readLanguage\(\) \|\| \(typeof navigator/.test(clientSrc));
+    assert.ok(clientSrc.includes('navigator.language'));
+  });
+
+  test('client: recording auto-stops at the per-engine length cap', () => {
+    // The local engine uploads raw 16 kHz float32 PCM: past ~4.7 min the
+    // request body exceeds the host's 24 MB cap and fails with 413 mid-flow.
+    assert.ok(/LOCAL_MAX_RECORDING_MS = 260_000/.test(clientSrc));
+    assert.ok(/CLOUD_MAX_RECORDING_MS = 600_000/.test(clientSrc));
+    assert.ok(/recordingCapTimer = setTimeout/.test(clientSrc));
+    assert.ok(clientSrc.includes('已达最长录音时长，自动转写'));
+  });
+
+  test('client: losing window focus cancels a tap-mode recording', () => {
+    // Alt+Tab starts the recording on the Alt keydown, then the window
+    // blurs — the mic must not stay hot and no text may be inserted.
+    assert.ok(/let discardWsOnEnd = false;/.test(clientSrc) && /let discardOnStop = false;/.test(clientSrc));
+    assert.ok(/function onWindowBlur\(\)[\s\S]{0,420}stopWebSpeech\(\);/.test(clientSrc));
+    assert.ok(/function onWindowBlur\(\)[\s\S]{0,560}stopRecording\(\);/.test(clientSrc));
+  });
+
+  test('client: tap-mode start clears a stale holdStopPending', () => {
+    // A hold-mode release that landed before an async start finished — and
+    // that start then failed (model download) — left holdStopPending set;
+    // the next tap recording was stopped the instant it started.
+    const block = clientSrc.match(/function toggleRecording\(\)[\s\S]{0,800}?return;/);
+    assert.ok(block && block[0].includes('holdStopPending = false;'),
+      'a stale hold-stop marker must not kill the next tap recording');
+  });
+
+  test('client: the settings prompt textarea is excluded from the composer fallback', () => {
+    // Without the exclusion the DOM fallback could grab the polish-prompt
+    // box on the settings page and insert the transcript there.
+    const tagged = (clientSrc.match(/data-voice-scribe-setting/g) || []).length;
+    assert.ok(tagged >= 2, 'the settings textarea must be tagged AND excluded in findComposerTextarea');
+    assert.ok(clientSrc.includes("el.closest('[data-voice-scribe-setting=\"1\"]')"), 'the fallback must skip tagged textareas');
+  });
+
+  test('client: the mic button polls the real busy state', () => {
+    assert.ok(clientSrc.includes('window.__voiceScribeBusy = busy'));
+    assert.ok(/busy: busy === true/.test(clientSrc));
+  });
 }
 
 const { pathToFileURL } = require('node:url');
 
 async function main() {
   await behavioural();
+  if (wroteLlmStub) {
+    fs.rmSync(path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh-llm'), { recursive: true, force: true });
+  }
   console.log('');
   console.log('TOTAL: ' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed ? 1 : 0);

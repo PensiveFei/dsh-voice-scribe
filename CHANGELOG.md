@@ -3,6 +3,30 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.7] — 2026-09-04
+
+### Fixed
+
+- **Web Speech 无草稿通道时终稿与中间结果叠加（文本重复）**：`finishWebSpeech` 的兜底路径此前把终稿追加到已写入 textarea 的 interim 之后——0.4.4 修的是 MediaRecorder 路径，这是同款 bug 的 Web Speech 孪生。现在兜底路径同样从 `wsDraftBase` 基线重建，不再依赖草稿通道。
+- **「自动」语言实际强制中文**：`recognition.lang` 在未选择语言时硬编码 `zh-CN`，英文浏览器用户永远得到中文识别结果。现在回退到 `navigator.language`。
+- **本地引擎超长录音中途 413 失败**：本地引擎上传 16 kHz float32 原始 PCM（4 字节/采样点），约 4.7 分钟后请求体就会超过宿主 24 MB 上限，超长录音在转写中途失败。现在录音到达安全时长自动停止（本地约 4.3 分钟、云端 10 分钟），状态条提示后直接转写。
+- **Alt+Tab 误触录音且麦克风不释放**（tap 模式）：Alt 的 keydown 会先触发录音，随后切走窗口，录音继续在后台运行、麦克风常亮，回来还会插入一段用户并不想要的转写。现在窗口失焦时**取消**录音（回滚预览、不插入文本）；按住说话模式维持原「松开结束」行为。
+- **设置页文本域被当成输入框**：无草稿通道时的 textarea 兜底查找可能命中设置页「润色提示词」文本框，把转写文本插进设置里。该文本框现在带标记并被兜底查找排除。
+- **`holdStopPending` 残留会瞬间掐断下一次点按录音**：按住模式下模型下载完成后启动失败会留下过期的 stop 标记；若用户切回点按模式，下一次录音一启动就被立刻停止。点按路径现在先清除该标记。
+- **润色调用对已断开客户端空跑 30 秒**：`polishText` 没有像 ASR 一样把「调用前就已 abort」的信号同步到超时控制器——客户端断开后润色仍会跑满 30 秒。现已显式转发（已 abort 的信号不会为后注册的监听器再次触发 abort，同 host-utils 的坑）。
+- **未知流块把 `undefined` 拼进润色结果**：`out += chunk.text` 对非 `text-delta` 块（如 tool-use）或非字符串内容追加 `undefined`。现在只接受字符串型 `text-delta`。
+- **`buildTrustedHosts` 对非数组配置直接抛错**：宿主若未提供 `trustedHosts`，插件启动即失败。现在按空列表兜底（仅允许回环）。
+- **停止录音的兜底状态「已停止」永不消失**：改回自动淡出的瞬时提示。
+
+### Changed
+
+- **`scripts/lint.cjs` 不再使用 `child_process` / `execSync`**：语法检查改用 `node:vm` 编译（tests、scripts 与 client bundle），ESM 的 lib 模块由测试套件导入覆盖。仓库中不再有任何进程派生产物，静态扫描（npm 包或 git 源码）都不会因此命中高风险信号。
+- 删除未使用的 `TextRow` 组件与 `recordingStartTime` 死变量；麦克风按钮现在真实反映「转写中」忙状态（此前 `busy` 恒为 false）。
+
+### Tests
+
+- 143 → **156**：新增 13 项回归——polishText 信号转发与块类型过滤（真实行为，离线 stub dsh-llm）、`buildTrustedHosts` 容错，以及 client/scripts 形状测试（Web Speech 基线重建、浏览器语言回退、录音时长上限、失焦取消、holdStopPending 清理、设置页文本域排除、忙状态轮询、lint 无进程派生）。
+
 ## [0.4.6] — 2026-09-01
 
 ### Fixed
