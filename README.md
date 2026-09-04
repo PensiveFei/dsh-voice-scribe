@@ -4,7 +4,7 @@
 [![release](https://img.shields.io/github/v/release/PensiveFei/dsh-voice-scribe)](https://github.com/PensiveFei/dsh-voice-scribe/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/PensiveFei/dsh-voice-scribe/ci.yml)](https://github.com/PensiveFei/dsh-voice-scribe/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/dsh-voice-scribe)](https://www.npmjs.com/package/dsh-voice-scribe)
-[![npm downloads](https://img.shields.io/npm/dw/dsh-voice-scribe)](https://www.npmjs.com/package/dsh-voice-scribe)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-voice-scribe)](https://www.npmjs.com/package/dsh-voice-scribe)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-voice-scribe.svg)](https://www.dsh.so/artifact/dsh-voice-scribe/)
 [![dsh.so install](https://www.dsh.so/badge/install/dsh-voice-scribe.svg)](https://www.dsh.so/artifact/dsh-voice-scribe/)
 [![Listed in awesome-dsh-plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com/p/PensiveFei/dsh-voice-scribe/)
@@ -27,7 +27,8 @@ dsh plugin --profile web add dsh-voice-scribe   # 重启 dsh web 后生效
 - **按住说话**：设置 → 语音输入 → 触发方式 可选「按住说话」——按住热键录音、松开自动转写（麦克风按钮同样支持）
 - **实时中间结果**：说话时识别文本实时出现在草稿里（浏览器引擎逐字、本地引擎每 3 秒刷新），停止后替换为最终结果
 - **录音电平指示**：录音中状态条下方显示实时电平条
-- **最长录音时长**：本地引擎单次约 4 分钟（受上传体积上限约束）、云端 10 分钟，到时长自动停止并转写
+- **最长录音时长**：本地引擎约 4 分钟、云端 10 分钟，到时长自动停止并转写
+- **切窗取消**：录音中切到其他窗口自动取消本次录音（Alt+Tab 误触不会留下录音）
 
 ## 识别引擎 Engine（默认「自动」，零配置）
 
@@ -57,7 +58,7 @@ DeepSeek=deep seek|迪普西克
 
 # 正则替换（标准 $1 语义）
 /老\s*师/老师/
-/\{(\w+)\}/【$1】/
+/\{([^}]+)\}/【$1】/
 ```
 
 设置 → 语音输入 页面会显示热词表状态（规则条数 / 文件路径 / 解析错误）。云端与本地离线引擎的转写结果统一应用。
@@ -74,7 +75,7 @@ DeepSeek=deep seek|迪普西克
 
 ## 与同类插件对比 Compare
 
-同为 DSH 的语音 / 输入增强插件，主要差异（截至 2026-08）：
+同为 DSH 的语音 / 输入增强插件，主要差异（截至 2026-09）：
 
 | | **dsh-voice-scribe**（本插件） | [dsh-better-input](https://github.com/DIAG5/dsh-better-input) |
 |---|---|---|
