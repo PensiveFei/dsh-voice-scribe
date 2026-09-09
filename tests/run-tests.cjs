@@ -376,12 +376,38 @@ test('client: registers a composer microphone button (conversation.input.right)'
   assert.ok(clientSrc.includes('dsh-voice-scribe-mic'));
 });
 
-test('client: draft channel prefers slot setDraft, falls back to textarea', () => {
+test('client: draft channel prefers the slot, falls back to the composer editor', () => {
   assert.ok(clientSrc.includes('function setDraftChannel'));
   assert.ok(clientSrc.includes('function draftText()'));
   assert.ok(clientSrc.includes('function setDraftText(text)'));
   assert.ok(clientSrc.includes('function insertTranscript(text)'));
   assert.ok(clientSrc.includes('draftChannel && typeof draftChannel.setDraft === "function"'));
+  assert.ok(clientSrc.includes('const editor = findComposerEditor();'));
+});
+
+test('client: reads the composer draft through the DSH 0.1.2 useInput hook', () => {
+  // DSH 0.1.2 hands session-scope slot entries useInput (a snapshot selector
+  // hook) and NOT a resolved input prop: reading input.draft answered "" for
+  // ever, so the baseline stayed empty and every transcript REPLACED the
+  // user's draft instead of appending to it.
+  assert.ok(clientSrc.includes('function MicrophoneButton({ input, useInput, inputActions, t: injectedT })'));
+  assert.ok(clientSrc.includes('useDraft((state) =>'), 'the live draft must come from the slot hook');
+  assert.ok(clientSrc.includes('getDraft: () => draftRef.current'));
+  assert.ok(!clientSrc.includes('getDraft: () => (input && typeof input.draft === "string")'),
+    'the always-empty input.draft read must be gone');
+});
+
+test('client: the composer editor resolves to a contenteditable (DSH 0.1.2+)', () => {
+  // 0.1.2 replaced the composer textarea with a Lexical contenteditable inside
+  // [data-composer-card]: the textarea-only lookup returned null, so the DOM
+  // fallback silently dropped every transcript AND classified the focused
+  // composer as a non-composer editable, which killed the Alt hotkey.
+  assert.ok(clientSrc.includes('function findComposerEditor()'));
+  assert.ok(/card\.querySelector\('\[contenteditable="true"\]'\)/.test(clientSrc), 'the card lookup must fall through to the contenteditable');
+  assert.ok(clientSrc.includes('function readEditorText(editor)'));
+  assert.ok(clientSrc.includes('function writeEditorText(editor, text)'));
+  assert.ok(clientSrc.includes('document.execCommand("insertText"'), 'Lexical only syncs through its own input pipeline');
+  assert.ok(/el\.closest\('\[data-composer-card="true"\]'\)/.test(clientSrc), 'composer focus must classify as the composer');
 });
 
 test('client: web speech streams interim results into the composer in realtime', () => {
@@ -518,9 +544,24 @@ test('repo: the manifest cannot drag the DSH core tree into a plugin install', (
   // alpha line but NOT any 0.1.0-rc.x host. Both DSH lines are in the wild, so
   // the range must name both explicitly or one group gets a permanent
   // unmet-peer warning.
+  // Every prerelease LINE needs its own tuple in the range: 0.1.1-rc.x,
+  // 0.1.3-alpha.x and 0.1.5-alpha.x hosts are all in the wild and would each
+  // get a permanent unmet-peer warning from a range that only names rc.6 and
+  // alpha.2.
   const llm = pkg.peerDependencies['@deepseek-ai/dsh-llm'];
-  assert.ok(/0\.1\.0-rc/.test(llm), 'peer range must admit the 0.1.0-rc line: ' + llm);
-  assert.ok(/0\.1\.2-alpha/.test(llm), 'peer range must admit the 0.1.2-alpha line: ' + llm);
+  for (const line of ['0\\.1\\.0-rc', '0\\.1\\.1-rc', '0\\.1\\.2-alpha', '0\\.1\\.3-alpha', '0\\.1\\.5-alpha']) {
+    assert.ok(new RegExp(line).test(llm), 'peer range must admit the ' + line.replace(/\\/g, '') + ' line: ' + llm);
+  }
+});
+
+test('repo: dsh.client names the current module-system package', () => {
+  // @deepseek-ai/dsh-client-runtime was renamed to @deepseek-ai/dsh-client-modules
+  // in DSH 0.1.2-alpha.2 — the stale name silently resolves to nothing on the
+  // new line, so the boot graph never orders the module system before us.
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const inject = (pkg.dsh && pkg.dsh.client && pkg.dsh.client.inject) || [];
+  assert.ok(inject.includes('@deepseek-ai/dsh-client-modules'), 'must name dsh-client-modules: ' + JSON.stringify(inject));
+  assert.ok(!inject.includes('@deepseek-ai/dsh-client-runtime'), 'the pre-0.1.2 package name must be gone');
 });
 
 test('local-asr: a missing native binding degrades with a clear code', () => {
@@ -1653,7 +1694,7 @@ async function behavioural() {
     // Without the exclusion the DOM fallback could grab the polish-prompt
     // box on the settings page and insert the transcript there.
     const tagged = (clientSrc.match(/data-voice-scribe-setting/g) || []).length;
-    assert.ok(tagged >= 2, 'the settings textarea must be tagged AND excluded in findComposerTextarea');
+    assert.ok(tagged >= 2, 'the settings textarea must be tagged AND excluded in findComposerEditor');
     assert.ok(clientSrc.includes("el.closest('[data-voice-scribe-setting=\"1\"]')"), 'the fallback must skip tagged textareas');
   });
 
@@ -1662,6 +1703,159 @@ async function behavioural() {
     assert.ok(/busy: busy === true/.test(clientSrc));
   });
 }
+
+// ---------- client bundle: real composer-adapter behaviour (vm + DOM stub) ----------
+/**
+ * Load lib/client.js in a vm sandbox with a minimal DOM stub and return the
+ * plugin's exported client face. The bundle is browser-only code, but its
+ * composer adapters are pure DOM logic — exactly what broke when DSH 0.1.2
+ * replaced the composer textarea with a Lexical contenteditable.
+ */
+function loadClientFace(dom) {
+  const vm = require('node:vm');
+  const registrations = [];
+  dom.window.__ModuleLoader__ = { load: (registration) => registrations.push(registration) };
+  const sandbox = {
+    window: dom.window,
+    document: dom.document,
+    navigator: { language: 'zh-CN' },
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    console,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    Event: class StubEvent { constructor(type, init) { this.type = type; this.bubbles = !!(init && init.bubbles); } },
+    fetch: async () => ({ ok: false, status: 0, json: async () => ({}) }),
+    URL
+  };
+  sandbox.globalThis = sandbox;
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'lib', 'client.js'), 'utf8'), vm.createContext(sandbox), {
+    filename: 'lib/client.js'
+  });
+  assert.strictEqual(registrations.length, 1, 'the bundle must register exactly once via __ModuleLoader__');
+  return registrations[0].factory(() => ({}));
+}
+
+/** DSH 0.1.2+ composer: a Lexical contenteditable inside [data-composer-card]. */
+function modernComposerDom() {
+  const calls = [];
+  let cardRef = null;
+  const editor = {
+    tagName: 'DIV',
+    innerText: '已有草稿',
+    textContent: '已有草稿',
+    contains: (el) => el === editor,
+    closest: () => cardRef,
+    focus() { this.focused = true; },
+    dispatchEvent(event) { this.lastEvent = event; }
+  };
+  const card = {
+    tagName: 'DIV',
+    querySelector: (sel) => (sel === 'textarea' ? null : sel === '[contenteditable="true"]' ? editor : null),
+    contains: (el) => el === editor,
+    closest: () => null
+  };
+  cardRef = card;
+  const document = {
+    querySelector: (sel) => (String(sel).startsWith('[data-composer-card') ? card : null),
+    querySelectorAll: () => [],
+    createElement: () => ({ style: {}, setAttribute() {}, appendChild() {} }),
+    createRange: () => ({ selectNodeContents() {}, collapse() {} }),
+    execCommand: (cmd, _ui, text) => { calls.push([cmd, text]); return true; },
+    body: { appendChild() {}, contains: () => true }
+  };
+  const window = {
+    getSelection: () => ({
+      rangeCount: 1,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt: () => ({ startContainer: editor })
+    }),
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  return { card, editor, calls, document, window };
+}
+
+/** Legacy composer (DSH <= 0.1.1): a plain textarea inside the same card. */
+function legacyComposerDom() {
+  const textarea = {
+    tagName: 'TEXTAREA',
+    value: '旧草稿',
+    selectionStart: 3,
+    selectionEnd: 3,
+    setRangeText(text) { this.value = text; },
+    dispatchEvent(event) { this.lastEvent = event; },
+    focus() {},
+    contains: () => false
+  };
+  const card = {
+    tagName: 'DIV',
+    querySelector: (sel) => (sel === 'textarea' ? textarea : null),
+    contains: (el) => el === textarea
+  };
+  const document = {
+    querySelector: (sel) => (String(sel).startsWith('[data-composer-card') ? card : null),
+    querySelectorAll: () => [],
+    createElement: () => ({ style: {}, setAttribute() {}, appendChild() {} }),
+    createRange: () => ({ selectNodeContents() {}, collapse() {} }),
+    execCommand: () => false,
+    body: { appendChild() {}, contains: () => true }
+  };
+  const window = { getSelection: () => null, addEventListener() {}, removeEventListener() {} };
+  return { card, editor: textarea, textarea, document, window };
+}
+
+test('client(behaviour): finds the contenteditable composer editor of DSH 0.1.2+', () => {
+  const dom = modernComposerDom();
+  const face = loadClientFace(dom);
+  assert.strictEqual(face.findComposerEditor(), dom.editor,
+    'a composer card without a textarea must resolve to its contenteditable');
+  assert.strictEqual(face.readEditorText(dom.editor), '已有草稿');
+});
+
+test('client(behaviour): writes the draft through the editor input pipeline', () => {
+  const dom = modernComposerDom();
+  const face = loadClientFace(dom);
+  assert.strictEqual(face.setDraftText('新草稿'), true);
+  assert.deepStrictEqual(dom.calls, [['insertText', '新草稿']],
+    'a contenteditable must be written through execCommand so Lexical stays in sync');
+  assert.strictEqual(face.isComposerEditable({ closest: () => dom.card }), true,
+    'focus anywhere inside the composer card is the composer');
+});
+
+test('client(behaviour): the draft channel wins over the DOM fallback', () => {
+  const dom = modernComposerDom();
+  const face = loadClientFace(dom);
+  const written = [];
+  face.setDraftChannel({ getDraft: () => '来自插槽', setDraft: (text) => written.push(text) });
+  assert.strictEqual(face.draftText(), '来自插槽');
+  assert.strictEqual(face.setDraftText('最终稿'), true);
+  assert.deepStrictEqual(written, ['最终稿']);
+  assert.deepStrictEqual(dom.calls, [], 'the DOM path must not run while a channel is live');
+  face.setDraftChannel(null);
+  assert.strictEqual(face.draftText(), '已有草稿', 'releasing the channel falls back to the DOM');
+});
+
+test('client(behaviour): legacy textarea composers still work', () => {
+  const dom = legacyComposerDom();
+  const face = loadClientFace(dom);
+  assert.strictEqual(face.findComposerEditor(), dom.textarea);
+  assert.strictEqual(face.readEditorText(dom.textarea), '旧草稿');
+  assert.strictEqual(face.setDraftText('替换稿'), true);
+  assert.strictEqual(dom.textarea.value, '替换稿');
+});
+
+test('client(behaviour): a plain Alt keypress in the composer is not swallowed', () => {
+  const dom = modernComposerDom();
+  const face = loadClientFace(dom);
+  // The keydown guard skips editable elements that are NOT the composer; the
+  // contenteditable composer must classify as the composer or every Alt press
+  // while typing is ignored.
+  assert.strictEqual(face.isComposerEditable(dom.editor), true);
+  assert.strictEqual(face.isComposerEditable({ closest: () => null }), false);
+});
 
 const { pathToFileURL } = require('node:url');
 

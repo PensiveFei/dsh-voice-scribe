@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.8] — 2026-09-09
+
+### Fixed（DSH 0.1.2 兼容性）
+
+- **输入框里按 Alt 完全没反应（高危）**：DSH 0.1.2 把输入框从 `<textarea>` 换成了 Lexical 的 `contenteditable`，而「焦点在非输入框的可编辑元素里就跳过热键」这条保护靠的是「是否等于输入框 textarea」。于是焦点在输入框里——也就是最常见的场景——按 Alt 一律被当成「在别的输入框里打字」而忽略。现在按 `[data-composer-card]` 容器判定，输入框内按 Alt 恢复正常。
+- **转写文本覆盖用户已输入的草稿（高危）**：0.1.2 的会话级插槽组件拿到的是 `useInput`（快照选择器 hook），**不再提供**已解析的 `input` 对象；插件读 `input.draft` 永远得到 `""`，「基线 + 转写」因此退化成「转写」——实时预览与终稿都会把用户已经打好的草稿整段替换掉。现在通过 `useInput((s) => s.draft)` 订阅实时草稿并存进 ref，旧壳子的 `input` 属性仍然兼容。
+- **输入框 DOM 兜底彻底失效、转写文本被静默丢弃**：草稿通道尚未就绪时的 textarea 兜底在 0.1.2 里找不到任何 textarea（输入框已是 contenteditable），`setDraftText` 直接返回 false、文本丢失，状态条显示「未找到输入框」。现在 `findComposerEditor` 同时识别 textarea 与 `[contenteditable="true"]`：读取用 `innerText`，写入走 `execCommand("insertText")`，让 Lexical 的输入管线保持同步。
+- **`dsh.client.inject` 仍写着已改名的包**：`@deepseek-ai/dsh-client-runtime` 自 DSH 0.1.2-alpha.2 起改名为 `@deepseek-ai/dsh-client-modules`，旧名在新宿主里解析为空（静默 no-op），启动图的模块顺序不再被声明。已同步为现名，并保留 `@deepseek-ai/dsh-client-locale`。
+- **peer 范围补齐 0.1.1-rc / 0.1.3-alpha / 0.1.5-alpha 三条线**：semver 的预发布规则要求逐条列出元组，否则这些宿主会一直收到 unmet-peer 告警。
+
+### Tests
+
+- 156 → **164**：新增 5 项**真实行为**测试——在 `node:vm` 沙箱里加载 client bundle 并配最小 DOM 桩，验证 contenteditable 查找 / 读取 / 写入、草稿通道优先级、旧 textarea 兼容、输入框焦点判定；另有 3 项形状与清单回归（`useInput` 草稿来源、contenteditable 编辑器、`dsh.client` 包名）。
+
 ## [0.4.7] — 2026-09-04
 
 ### Fixed

@@ -9,7 +9,7 @@
 [![dsh.so install](https://www.dsh.so/badge/install/dsh-voice-scribe.svg)](https://www.dsh.so/artifact/dsh-voice-scribe/)
 [![Listed in awesome-dsh-plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com/p/PensiveFei/dsh-voice-scribe/)
 
-DSH 专属语音输入插件：**点按或按住 Alt 说话、松开/再点按转文字**，插入输入框光标处。
+DSH 专属语音输入插件：**点按或按住 Alt 说话、松开/再点按转文字**，结果追加到输入框草稿末尾（不覆盖已输入内容）。
 Voice input for DeepSeek Harness: tap or hold Alt to talk, get text in the composer.
 
 > ⚠️ 非官方插件，与 DeepSeek / 深度求索公司无关联。使用前请阅读 [SECURITY.md](./SECURITY.md)。
@@ -90,6 +90,12 @@ DeepSeek=deep seek|迪普西克
 | 提示词优化 / 文件转 Markdown | ❌ | ✅ |
 
 只想要**更省心、更私密的语音输入** → dsh-voice-scribe；需要**一整套输入增强**（提示词优化、文件转 Markdown） → dsh-better-input。两者可并存。
+
+## 兼容性 Compatibility
+
+- 需要 **DSH 0.1.0-rc.6 及以上**（含 `0.1.1-rc` / `0.1.2-alpha` / `0.1.3-alpha` / `0.1.5-alpha` 各预发布线）。
+- 输入框插槽 `conversation.input.right` 在 DSH **0.1.2** 起由 `<textarea>` 改为 Lexical `contenteditable`：0.4.8 起两种形态都支持（读取实时草稿走 `useInput`，写入走 `inputActions.setDraft`）。
+- 界面没有麦克风按钮（旧壳子没有该插槽）时，**Alt 热键仍然可用**。
 
 ## 开发 Dev
 
