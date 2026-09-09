@@ -32,6 +32,12 @@ test('host: exports name and inject', () => {
   assert.ok(/export const inject = \["webServer", "webRuntime", "llm"\]/.test(src));
 });
 
+test('host: local-transcribe threads the request abort signal into the decoder', () => {
+  // Without it a client that timed out or navigated away left a core-busy
+  // sherpa decode (and every queued decode behind it) running for minutes.
+  assert.ok(src.includes('transcribePcm(base64ToFloat32(audio), sampleRate, modelDir(), abort.signal)'));
+});
+
 test('host: has transcribe/polish/list-models/local actions', () => {
   assert.ok(src.includes('action === "transcribe"'));
   assert.ok(src.includes('action === "polish"'));
@@ -380,7 +386,8 @@ test('client: draft channel prefers the slot, falls back to the composer editor'
   assert.ok(clientSrc.includes('function setDraftChannel'));
   assert.ok(clientSrc.includes('function draftText()'));
   assert.ok(clientSrc.includes('function setDraftText(text)'));
-  assert.ok(clientSrc.includes('function insertTranscript(text)'));
+  assert.ok(clientSrc.includes('function commitTranscript(baseline, finalText)'));
+  assert.ok(clientSrc.includes('function rollbackPreview(baseline)'));
   assert.ok(clientSrc.includes('draftChannel && typeof draftChannel.setDraft === "function"'));
   assert.ok(clientSrc.includes('const editor = findComposerEditor();'));
 });
@@ -412,7 +419,7 @@ test('client: the composer editor resolves to a contenteditable (DSH 0.1.2+)', (
 
 test('client: web speech streams interim results into the composer in realtime', () => {
   assert.ok(clientSrc.includes('wsDraftBase'));
-  assert.ok(clientSrc.includes('setDraftText(wsDraftBase + sep + wsLastInterim)'));
+  assert.ok(clientSrc.includes('writePreviewSpan(wsDraftBase + sep + wsLastInterim)'));
   assert.ok(clientSrc.includes('interimChanged'));
 });
 
@@ -1234,8 +1241,9 @@ async function behavioural() {
     // Regression: two overlapping transcriptions used to each construct an
     // OfflineRecognizer — the ~230 MB model was loaded into memory TWICE.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-rec-'));
-    fs.writeFileSync(path.join(dir, 'model.int8.onnx'), Buffer.alloc(16));
-    fs.writeFileSync(path.join(dir, 'tokens.txt'), 'a b c');
+    // Fixtures must clear the plausibility floor in modelReady().
+    fs.writeFileSync(path.join(dir, 'model.int8.onnx'), Buffer.alloc(local.MIN_MODEL_BYTES));
+    fs.writeFileSync(path.join(dir, 'tokens.txt'), 'a b c'.padEnd(local.MIN_TOKENS_BYTES, ' '));
     local.disposeRecognizer();
     let loads = 0;
     const loader = async () => { loads++; await new Promise((r) => setTimeout(r, 50)); return { fake: true }; };
@@ -1258,8 +1266,9 @@ async function behavioural() {
 
   await testAsync('local-asr: failed recognizer load clears the memo so retry works', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-rec-fail-'));
-    fs.writeFileSync(path.join(dir, 'model.int8.onnx'), Buffer.alloc(16));
-    fs.writeFileSync(path.join(dir, 'tokens.txt'), 'a b c');
+    // Fixtures must clear the plausibility floor in modelReady().
+    fs.writeFileSync(path.join(dir, 'model.int8.onnx'), Buffer.alloc(local.MIN_MODEL_BYTES));
+    fs.writeFileSync(path.join(dir, 'tokens.txt'), 'a b c'.padEnd(local.MIN_TOKENS_BYTES, ' '));
     local.disposeRecognizer();
     let loads = 0;
     const loader = async () => { loads++; if (loads === 1) throw new Error('boom'); return { ok: true }; };
@@ -1286,6 +1295,69 @@ async function behavioural() {
       local.disposeRecognizer();
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  await testAsync('local-asr: a truncated download is rejected, never published', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-trunc-'));
+    const GOOD = 'http://trunc-mirror.invalid';
+    const realFetch = globalThis.fetch;
+    // The body ends early while content-length promises more. The read loop
+    // only sees `done`, which used to rename the partial file into place — and
+    // because startModelDownload skips any non-empty file, that broken model
+    // was permanent.
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      const isTokens = u.endsWith('/tokens.txt');
+      const body = isTokens ? [Buffer.from('a b c')] : [Buffer.alloc(1024, 1)];
+      const promised = isTokens ? 5 : 256 * 1024;
+      let i = 0;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name.toLowerCase() === 'content-length' ? String(promised) : null) },
+        body: {
+          getReader: () => ({
+            read: async () => (i < body.length ? { done: false, value: body[i++] } : { done: true, value: undefined })
+          })
+        }
+      };
+    };
+    try {
+      await local.startModelDownload(dir, [GOOD]);
+      for (let i = 0; i < 200 && local.getDownloadState().running; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const state = local.getDownloadState();
+      assert.strictEqual(state.running, false);
+      assert.ok(/truncated/.test(state.error), 'the short read must be reported: ' + state.error);
+      assert.strictEqual(fs.existsSync(path.join(dir, 'model.int8.onnx')), false,
+        'a partial model must never be published');
+      assert.deepStrictEqual(fs.readdirSync(dir).filter((f) => f.includes('.part')), [], 'no junk left');
+    } finally {
+      globalThis.fetch = realFetch;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('local-asr: modelReady rejects an implausibly small model', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-ready-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'tokens.txt'), 'a b c');
+      fs.writeFileSync(path.join(dir, 'model.int8.onnx'), Buffer.alloc(2048, 0));
+      assert.strictEqual(await local.modelReady(dir), false, 'a truncated model must not report ready');
+      assert.strictEqual(await local.modelReady(dir, 1024, 1), true, 'the floor must be injectable');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('local-asr: an already-aborted request never reaches the decode queue', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => local.transcribePcm(new Float32Array(1600), 16000, path.join(os.tmpdir(), 'vs-none'), controller.signal),
+      (error) => error.code === 'asr-aborted'
+    );
   });
 
   await testAsync('local-asr: cleanStaleParts removes only .part/.part.fail', async () => {
@@ -1347,7 +1419,9 @@ async function behavioural() {
       const state = local.getDownloadState();
       assert.strictEqual(state.running, false);
       assert.strictEqual(state.error, '');
-      assert.strictEqual(await local.modelReady(dir), true);
+      // The fixture payload is far below the real ~228 MB model: opt out of
+      // the plausibility floor this test does not exercise.
+      assert.strictEqual(await local.modelReady(dir, 1, 1), true);
       assert.strictEqual(fs.statSync(path.join(dir, 'model.int8.onnx')).size, payload.length);
       const junk = fs.readdirSync(dir).filter((f) => f.includes('.part'));
       assert.deepStrictEqual(junk, [], 'no .part/.part.fail junk left: ' + junk.join(','));
@@ -1629,32 +1703,40 @@ async function behavioural() {
     assert.ok(/finally \{\s*startPending = false;/.test(clientSrc));
   });
 
-  test('client: the draft is only rolled back when a preview was written', () => {
+  test('client: a preview is only rolled back while the composer still holds it', () => {
     // recDraftBase is initialised to "", so "!== undefined" was ALWAYS true: a
     // failed cloud transcription silently wiped whatever the user typed while
-    // the recording was being transcribed.
+    // the recording was being transcribed. The guard is now stronger — the
+    // rollback compares the composer against the span we actually wrote, so a
+    // draft the user edited mid-recording (or already sent) is never clobbered.
     assert.ok(!/if \(recDraftBase !== undefined\) setDraftText/.test(clientSrc),
       'the unconditional rollback must be gone');
-    assert.ok(/let previewWritten = false;/.test(clientSrc));
-    const gated = clientSrc.match(/if \(previewWritten\) setDraftText\(recDraftBase\);/g) || [];
-    assert.ok(gated.length >= 3, 'every failure path must gate the rollback on previewWritten');
+    assert.ok(/function rollbackPreview\(baseline\)/.test(clientSrc));
+    assert.ok(/draftText\(\) === previewSpanText/.test(clientSrc), 'the rollback must compare the live composer');
+    const gated = clientSrc.match(/rollbackPreview\(recDraftBase\);/g) || [];
+    assert.ok(gated.length >= 3, 'every failure path must go through rollbackPreview');
   });
 
-  test('client: the final transcript replaces the preview instead of appending', () => {
+  test('client: the final transcript replaces the live preview span instead of appending', () => {
     // The old branch also required a draft channel; without one the preview
     // landed in the textarea through the DOM fallback and the final transcript
-    // was appended on top of it, duplicating the text.
+    // was appended on top of it, duplicating the text. commitTranscript keys
+    // off the span we wrote, and appends when the user changed the draft.
     assert.ok(!/effectiveEngine\(\) === "local" && draftChannel/.test(clientSrc),
       'the insert decision must not depend on the draft channel');
-    assert.ok(/if \(previewWritten\) \{[\s\S]{0,240}setDraftText\(recDraftBase \+ sep \+ text\)/.test(clientSrc));
+    assert.ok(/const rebuild = previewSpanText !== null && current === previewSpanText;/.test(clientSrc));
+    assert.ok(/rebuild \? baseline \+ sep\(baseline\) \+ finalText : current \+ sep\(current\) \+ finalText/.test(clientSrc),
+      'an edited draft must be appended to, not replaced');
+    assert.ok(clientSrc.includes('commitTranscript(recDraftBase, text)'));
   });
 
-  test('client: Web Speech final rebuilds from the baseline without a draft channel', () => {
+  test('client: Web Speech final commits through the same baseline-aware path', () => {
     // The no-channel fallback used to append the final transcript AFTER the
-    // interim already written into the textarea — duplicated text. It must
-    // rebuild from wsDraftBase exactly like the MediaRecorder path does.
+    // interim already written into the textarea — duplicated text. Both engines
+    // now commit through commitTranscript, which never depends on the channel.
     assert.ok(!/insertTranscript\(finalText\)/.test(clientSrc), 'the append-after-interim path must be gone');
-    assert.ok(/setDraftText\(wsDraftBase \+ \(wsDraftBase/.test(clientSrc), 'final rebuild must not depend on the draft channel');
+    assert.ok(clientSrc.includes('commitTranscript(wsDraftBase, finalText)'));
+    assert.ok(!/function insertTranscript/.test(clientSrc), 'the dead whole-draft appender must be gone');
   });
 
   test('client: Web Speech "auto" language follows the browser', () => {
@@ -1698,7 +1780,55 @@ async function behavioural() {
     assert.ok(clientSrc.includes("el.closest('[data-voice-scribe-setting=\"1\"]')"), 'the fallback must skip tagged textareas');
   });
 
-  test('client: the mic button polls the real busy state', () => {
+  test('client: the polish toggle is actually reachable (model picker writes POLISH_MODEL_KEY)', () => {
+  // readPolishModel() only ever read localStorage: NOTHING wrote the key, so
+  // "polish enabled" produced the raw transcript forever and the custom prompt
+  // was inert. The picker fills it from the host's list-models action.
+  assert.ok(clientSrc.includes('writeJson(POLISH_MODEL_KEY, { provider: first.provider, model: first.model })'),
+    'the first available route must be picked by default');
+  assert.ok(clientSrc.includes('writeJson(POLISH_MODEL_KEY, { provider: picked.provider, model: picked.model })'),
+    'the picker must persist the user choice');
+  assert.ok(clientSrc.includes('t("polish.modelTitle")'));
+  assert.ok(clientSrc.includes('void listModels().then((routes) => {'));
+});
+
+test('client: MediaRecorder is started with a timeslice so previews see chunks', () => {
+  // Without a timeslice ondataavailable only fires at stop(), so every 3 s
+  // preview built an empty blob and the "realtime preview" never existed.
+  assert.ok(clientSrc.includes('recorder.start(1000)'), 'a timeslice is required for live chunks');
+  assert.ok(clientSrc.includes('let previewChunkIndex = 0;'));
+  assert.ok(clientSrc.includes('const tail = recordingChunks.slice(previewChunkIndex);'),
+    'previews must upload only the new audio, not the whole recording');
+});
+
+test('client: a blur while getUserMedia is pending cancels the recording', () => {
+  // Alt+Tab during the permission prompt started a recording in the
+  // background: the mic stayed hot and nothing stopped it.
+  assert.ok(clientSrc.includes('let cancelPendingStart = false;'));
+  assert.ok(/if \(startPending\) \{[\s\S]{0,120}cancelPendingStart = true;/.test(clientSrc));
+  assert.ok(/if \(cancelPendingStart\) \{[\s\S]{0,260}track.stop\(\)/.test(clientSrc));
+});
+
+test('client: the decode AudioContext is closed on every path', () => {
+  // ctx.close() ran only on success: repeated failed decodes exhausted the
+  // browser's context budget and broke the local engine + level meter.
+  assert.ok(/let ctx = null;/.test(clientSrc));
+  assert.ok(/finally \{[\s\S]{0,300}if \(ctx\) ctx.close\(\)/.test(clientSrc));
+});
+
+test('client: a Web Speech error rolls the interim hypothesis back', () => {
+  assert.ok(/if \(wsError !== null\) \{[\s\S]{0,400}rollbackPreview\(wsDraftBase\)/.test(clientSrc));
+});
+
+test('client: the cloud call timeout scales with the provider chain', () => {
+  // The host tries providers sequentially at up to 60 s each: a fixed 75 s
+  // client cap aborted a chain the user configured on purpose.
+  assert.ok(clientSrc.includes('const ASR_PROVIDER_TIMEOUT_MS = 60_000;'));
+  assert.ok(clientSrc.includes('HOST_CALL_TIMEOUT_MS + ASR_PROVIDER_TIMEOUT_MS * (hostProviderCount - 1)'));
+  assert.ok(clientSrc.includes('void fetchSettings().then(applyHostSettings)'));
+});
+
+test('client: the mic button polls the real busy state', () => {
     assert.ok(clientSrc.includes('window.__voiceScribeBusy = busy'));
     assert.ok(/busy: busy === true/.test(clientSrc));
   });
@@ -1855,6 +1985,51 @@ test('client(behaviour): a plain Alt keypress in the composer is not swallowed',
   // while typing is ignored.
   assert.strictEqual(face.isComposerEditable(dom.editor), true);
   assert.strictEqual(face.isComposerEditable({ closest: () => null }), false);
+});
+
+test('client(behaviour): the final transcript rebuilds the preview span, never the user draft', () => {
+  const dom = modernComposerDom();
+  const face = loadClientFace(dom);
+  const writes = [];
+  let draft = '已有草稿';
+  face.setDraftChannel({ getDraft: () => draft, setDraft: (text) => { draft = text; writes.push(text); } });
+  face.resetPreviewState();
+  face.writePreviewSpan('已有草稿 边说边出');
+  // The composer still holds exactly our preview span → rebuild from baseline.
+  assert.strictEqual(face.commitTranscript('已有草稿', '最终文本'), true);
+  assert.deepStrictEqual(writes, ['已有草稿 边说边出', '已有草稿 最终文本']);
+});
+
+test('client(behaviour): a draft edited while dictating is appended to, not clobbered', () => {
+  const dom = modernComposerDom();
+  const face = loadClientFace(dom);
+  const writes = [];
+  let draft = '已有草稿';
+  face.setDraftChannel({ getDraft: () => draft, setDraft: (text) => { draft = text; writes.push(text); } });
+  face.resetPreviewState();
+  face.writePreviewSpan('已有草稿 边说边出');
+  // The user sent the draft (Enter clears the composer) or typed something new.
+  draft = '用户新输入的内容';
+  assert.strictEqual(face.commitTranscript('已有草稿', '最终文本'), true);
+  assert.deepStrictEqual(writes, ['已有草稿 边说边出', '用户新输入的内容 最终文本'],
+    'the already-sent text must not be resurrected and the new draft must survive');
+});
+
+test('client(behaviour): rollback only rewrites a composer still holding the preview', () => {
+  const dom = modernComposerDom();
+  const face = loadClientFace(dom);
+  const writes = [];
+  let draft = '基线';
+  face.setDraftChannel({ getDraft: () => draft, setDraft: (text) => { draft = text; writes.push(text); } });
+  face.resetPreviewState();
+  face.writePreviewSpan('基线 预览');
+  face.rollbackPreview('基线');
+  assert.deepStrictEqual(writes, ['基线 预览', '基线'], 'an untouched preview is rolled back');
+  face.writePreviewSpan('基线 预览');
+  draft = '用户改了';
+  face.rollbackPreview('基线');
+  assert.deepStrictEqual(writes, ['基线 预览', '基线', '基线 预览'], 'an edited draft must be left alone');
+  assert.strictEqual(draft, '用户改了');
 });
 
 const { pathToFileURL } = require('node:url');
