@@ -548,17 +548,70 @@ test('repo: the manifest cannot drag the DSH core tree into a plugin install', (
   // semver's prerelease rule: a range that contains a prerelease admits
   // prereleases ONLY for that exact major.minor.patch tuple. So ">=0.1.0-rc.6"
   // covers 0.1.0-rc.x but NOT 0.1.2-alpha.x, and ">=0.1.2-alpha.2" covers the
-  // alpha line but NOT any 0.1.0-rc.x host. Both DSH lines are in the wild, so
-  // the range must name both explicitly or one group gets a permanent
-  // unmet-peer warning.
-  // Every prerelease LINE needs its own tuple in the range: 0.1.1-rc.x,
-  // 0.1.3-alpha.x and 0.1.5-alpha.x hosts are all in the wild and would each
-  // get a permanent unmet-peer warning from a range that only names rc.6 and
-  // alpha.2.
+  // alpha line but NOT any 0.1.0-rc.x host. Several DSH lines are in the wild
+  // at once, so the range must name every published prerelease tuple.
+  //
+  // The check is DERIVED from the real registry list instead of a hand-copied
+  // line list: the hand-written version named five lines and still missed
+  // 0.1.6-alpha.1 — the current `alpha` dist-tag — so that whole generation of
+  // hosts silently got an unmet peer. Add new lines to `published` when DSH
+  // publishes them, and this test will demand them in the range.
   const llm = pkg.peerDependencies['@deepseek-ai/dsh-llm'];
-  for (const line of ['0\\.1\\.0-rc', '0\\.1\\.1-rc', '0\\.1\\.2-alpha', '0\\.1\\.3-alpha', '0\\.1\\.5-alpha']) {
-    assert.ok(new RegExp(line).test(llm), 'peer range must admit the ' + line.replace(/\\/g, '') + ' line: ' + llm);
+  const PUBLISHED_DSH_LLM = [
+    '0.1.0-rc.6', '0.1.0-rc.7', '0.1.0-rc.8',
+    '0.1.1-rc.1', '0.1.1-rc.2',
+    '0.1.2-alpha.2', '0.1.2-alpha.3', '0.1.2-alpha.4', '0.1.2-alpha.5', '0.1.2-rc.1',
+    '0.1.3-alpha.2',
+    '0.1.5-alpha.1', '0.1.5-alpha.2', '0.1.5-rc.1', '0.1.5-rc.2',
+    '0.1.6-alpha.1'
+  ];
+  // Minimal semver precedence for the shapes DSH publishes (x.y.z[-pre]).
+  const parseVer = (v) => {
+    const m = String(v).match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+    if (!m) return null;
+    return { nums: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ? m[4].split('.') : [] };
+  };
+  const cmpPre = (a, b) => {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const x = a[i], y = b[i];
+      if (x === undefined) return -1;
+      if (y === undefined) return 1;
+      const xn = /^\d+$/.test(x), yn = /^\d+$/.test(y);
+      if (xn && yn) { if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1; }
+      else if (xn !== yn) return xn ? -1 : 1;
+      else if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  };
+  const cmpVer = (a, b) => {
+    for (let i = 0; i < 3; i++) if (a.nums[i] !== b.nums[i]) return a.nums[i] < b.nums[i] ? -1 : 1;
+    if (a.pre.length === 0 || b.pre.length === 0) {
+      return a.pre.length === b.pre.length ? 0 : (a.pre.length === 0 ? 1 : -1);
+    }
+    return cmpPre(a.pre, b.pre);
+  };
+  const floors = [];
+  for (const comparator of llm.split('||')) {
+    const m = comparator.trim().match(/^>=\s*(.+)$/);
+    assert.ok(m, 'unsupported comparator in the peer range: ' + comparator.trim());
+    const parsed = parseVer(m[1].trim());
+    assert.ok(parsed, 'unparsable version in the peer range: ' + m[1].trim());
+    // Only a comparator that itself carries a prerelease admits prereleases
+    // of its own tuple; a bare x.y.z floor admits that tuple too.
+    floors.push({ tuple: parsed.nums.join('.'), prerelease: parsed.pre.length > 0, parsed });
   }
+  const uncovered = [];
+  for (const version of PUBLISHED_DSH_LLM) {
+    const v = parseVer(version);
+    const admitted = floors.some((f) => {
+      if (f.tuple !== v.nums.join('.')) return false;
+      if (v.pre.length > 0 && !f.prerelease) return false;
+      return cmpVer(v, f.parsed) >= 0;
+    });
+    if (!admitted) uncovered.push(version);
+  }
+  assert.deepStrictEqual(uncovered, [],
+    'these hosts would get a permanent unmet-peer warning: ' + uncovered.join(', ') + ' — range: ' + llm);
 });
 
 test('repo: dsh.client names the current module-system package', () => {
@@ -1300,6 +1353,7 @@ async function behavioural() {
   await testAsync('local-asr: a truncated download is rejected, never published', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-trunc-'));
     const GOOD = 'http://trunc-mirror.invalid';
+    let cancelled = 0;
     const realFetch = globalThis.fetch;
     // The body ends early while content-length promises more. The read loop
     // only sees `done`, which used to rename the partial file into place — and
@@ -1317,7 +1371,10 @@ async function behavioural() {
         headers: { get: (name) => (name.toLowerCase() === 'content-length' ? String(promised) : null) },
         body: {
           getReader: () => ({
-            read: async () => (i < body.length ? { done: false, value: body[i++] } : { done: true, value: undefined })
+            read: async () => (i < body.length ? { done: false, value: body[i++] } : { done: true, value: undefined }),
+            // A real ReadableStreamDefaultReader always has cancel(); the
+            // mirror-failover path calls it to stop an abandoned transfer.
+            cancel: async () => { cancelled++; }
           })
         }
       };
@@ -1333,6 +1390,7 @@ async function behavioural() {
       assert.strictEqual(fs.existsSync(path.join(dir, 'model.int8.onnx')), false,
         'a partial model must never be published');
       assert.deepStrictEqual(fs.readdirSync(dir).filter((f) => f.includes('.part')), [], 'no junk left');
+      assert.ok(cancelled > 0, 'an abandoned mirror body must be cancelled, not left streaming');
     } finally {
       globalThis.fetch = realFetch;
       fs.rmSync(dir, { recursive: true, force: true });
@@ -1347,6 +1405,91 @@ async function behavioural() {
       assert.strictEqual(await local.modelReady(dir), false, 'a truncated model must not report ready');
       assert.strictEqual(await local.modelReady(dir, 1024, 1), true, 'the floor must be injectable');
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  await testAsync('local-asr: a stubbed model file is refetched, not trusted forever', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-stub-'));
+    // A download that died early leaves a few bytes behind. The skip test used
+    // to be "non-empty ⇒ keep", so that stub was trusted forever: modelReady()
+    // kept answering false while every retry skipped the one file that needed
+    // refetching, and the user saw an endless download that never finished.
+    fs.writeFileSync(path.join(dir, 'tokens.txt'), 'x');
+    const realFetch = globalThis.fetch;
+    const served = Buffer.from('t'.repeat(200));
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name.toLowerCase() === 'content-length' ? String(served.length) : null) },
+      body: {
+        getReader: () => {
+          let sent = false;
+          return {
+            read: async () => {
+              if (sent) return { done: true, value: undefined };
+              sent = true;
+              return { done: false, value: served };
+            },
+            cancel: async () => {}
+          };
+        }
+      }
+    });
+    try {
+      await local.startModelDownload(dir, ['http://stub-mirror.invalid']);
+      for (let i = 0; i < 200 && local.getDownloadState().running; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.strictEqual(local.getDownloadState().running, false);
+      assert.strictEqual(fs.readFileSync(path.join(dir, 'tokens.txt'), 'utf8'), served.toString(),
+        'the stub must be replaced by a freshly downloaded tokens.txt');
+    } finally {
+      globalThis.fetch = realFetch;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await testAsync('local-asr: concurrent download requests start exactly one transfer', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-race-'));
+    const realFetch = globalThis.fetch;
+    const served = Buffer.from('m'.repeat(200));
+    let transfers = 0;
+    globalThis.fetch = async () => {
+      transfers++;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name.toLowerCase() === 'content-length' ? String(served.length) : null) },
+        body: {
+          getReader: () => {
+            let sent = false;
+            return {
+              read: async () => {
+                if (sent) return { done: true, value: undefined };
+                sent = true;
+                return { done: false, value: served };
+              },
+              cancel: async () => {}
+            };
+          }
+        }
+      };
+    };
+    try {
+      // Two callers (two browser tabs, or the settings page racing the hotkey)
+      // reach local-download before the first one's readiness probe resolves.
+      // Both used to pass the running guard and interleave into the same .part.
+      const first = local.startModelDownload(dir, ['http://race.invalid']);
+      const second = local.startModelDownload(dir, ['http://race.invalid']);
+      const [a, b] = await Promise.all([first, second]);
+      assert.strictEqual([a, b].filter((r) => r.started).length, 1,
+        'exactly one caller may start the transfer');
+      for (let i = 0; i < 200 && local.getDownloadState().running; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.strictEqual(transfers, 2, 'tokens + model must be fetched once each, got ' + transfers);
+    } finally {
+      globalThis.fetch = realFetch;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -1394,7 +1537,8 @@ async function behavioural() {
         headers: { get: (name) => (name.toLowerCase() === 'content-length' ? String(contentLength ?? '') : null) },
         body: {
           getReader: () => ({
-            read: async () => (i < bodyChunks.length ? { done: false, value: bodyChunks[i++] } : { done: true, value: undefined })
+            read: async () => (i < bodyChunks.length ? { done: false, value: bodyChunks[i++] } : { done: true, value: undefined }),
+            cancel: async () => {}
           })
         }
       };
@@ -1478,8 +1622,47 @@ async function behavioural() {
     const p = utils.parseHotwords('/姓名[:：]\\s*/姓名：/g\n/\\{([^}]+)\\}/【$1】/g');
     assert.strictEqual(utils.applyHotwords('姓名: 张三 {测试}', p.rules), '姓名：张三 【测试】');
   });
+  test('utils: a regex hot-word rule without g still fixes every occurrence', () => {
+    // /错词/对词/i is the JS/sed habit, and the README shows flagless examples.
+    // String.replace semantics replaced only the FIRST match, silently — for
+    // exactly the tokens a replacement table exists to fix.
+    const p = utils.parseHotwords('/C\\+\\+/C++/');
+    assert.strictEqual(utils.applyHotwords('我用 C++ 和 C++ 写代码', p.rules), '我用 C++ 和 C++ 写代码');
+    const q = utils.parseHotwords('/苹菓/苹果/i');
+    assert.strictEqual(utils.applyHotwords('苹菓 和 苹菓', q.rules), '苹果 和 苹果');
+    // The flagless form is unambiguous: every occurrence.
+    const r = utils.parseHotwords('/错词/对词/');
+    assert.strictEqual(utils.applyHotwords('错词 和 错词', r.rules), '对词 和 对词');
+  });
 
-  test('utils: applyHotwords applies rules in file order (later sees earlier output)', () => {
+  test('utils: localPolish does not append a terminator after a closing mark', () => {
+    assert.strictEqual(utils.localPolish('已完成；'), '已完成；');
+    assert.strictEqual(utils.localPolish('他说：“好”'), '他说：“好”');
+    assert.strictEqual(utils.localPolish('第一，'), '第一，');
+    // A bare statement still gets one.
+    assert.strictEqual(utils.localPolish('你好'), '你好。');
+    assert.strictEqual(utils.localPolish('hello'), 'hello.');
+  });
+
+  await testAsync('host: get-settings survives a non-string asrApiKey', async () => {
+  await testAsync('host: get-settings survives a non-string asrApiKey', async () => {
+    // A hand-edited voice-input.json with a non-string key was the only
+    // unguarded read in the settings view: it threw out of the handler, the
+    // 500 made fetchSettings() return null, and the whole 语音输入 row rendered
+    // blank with no error — while transcription itself kept working.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-key-'));
+    const prev = process.env.DSH_HOME;
+    process.env.DSH_HOME = tmp;
+    fs.writeFileSync(path.join(tmp, 'voice-input.json'), JSON.stringify({ asrApiKey: 123, asrUrl: 'https://asr.example/v1' }));
+    try {
+      const { res, body } = await post(host, { action: 'get-settings' });
+      assert.strictEqual(res._state.status, 200, 'a bad settings file must not 500 the settings view');
+      assert.strictEqual(body.value.hasKey, false);
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prev;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
     // Format is 正确=错误: rule 1 fixes 甲→乙, rule 2 then fixes 乙→丙.
     const p = utils.parseHotwords('乙=甲\n丙=乙');
     assert.strictEqual(utils.applyHotwords('甲', p.rules), '丙');
@@ -1755,6 +1938,60 @@ async function behavioural() {
     assert.ok(clientSrc.includes('已达最长录音时长，自动转写'));
   });
 
+  test('client: releasing a hold with a modifier still down ends the recording', () => {
+    // Alt+Shift is the Windows input-language switch: the user is holding Alt
+    // exactly when Shift goes down, and reusing the keydown matcher (which
+    // requires !shiftKey) left holdActive stuck and the microphone live until
+    // the length cap — up to 10 minutes of ambient audio then transcribed.
+    assert.ok(/if \(hotkey === "alt"\) return event\.key === "Alt";/.test(clientSrc),
+      'the release path must not require the modifiers the keydown path requires');
+  });
+
+  test('client: a throwing recorder.start() releases the microphone', () => {
+    // start() throws when the stream died between getUserMedia and here;
+    // unguarded, no onstop would ever release the stream and the next tap
+    // opened a second one on top of the leak.
+    assert.ok(/try \{\s*recorder\.start\(1000\);\s*\} catch \(error\) \{/.test(clientSrc));
+    assert.ok(/catch \(error\) \{[\s\S]{0,260}track\.stop\(\)[\s\S]{0,120}stream = null;/.test(clientSrc));
+  });
+
+  test('client: an empty local transcript is not reported as inserted', () => {
+    // The local route answers ok:true with text:"" for silence; committing
+    // that said "✅ 已插入" while inserting nothing, plus a stray space.
+    assert.ok(/if \(typeof result\.text !== "string" \|\| result\.text\.trim\(\) === ""\)/.test(clientSrc));
+    assert.ok(/未识别到文字（请靠近麦克风再说一次）/.test(clientSrc));
+  });
+
+  test('client: saving the cloud chain retires the legacy single-endpoint fields', () => {
+    // The host folds asrUrl/asrApiKey back in as provider #1 whenever present,
+    // so leaving them behind duplicated row #1 on every save and made
+    // "清除已保存 Key" leave the folded key still authenticating.
+    const calls = clientSrc.match(/saveSettings\(\{ asrProviders: chain[^}]*\}\)/g) || [];
+    assert.strictEqual(calls.length, 2, 'save and clear-key are the two writers');
+    for (const call of calls) {
+      assert.ok(call.includes('asrUrl: null') && call.includes('asrApiKey: null'),
+        'the legacy fields must be deleted with the chain: ' + call);
+    }
+  });
+
+  test('client: the add-provider button stops at the host cap', () => {
+    // Rows past MAX_ASR_PROVIDERS are dropped when saving, so offering them
+    // produced a row that reported "已保存", never ran, and vanished on reload.
+    assert.ok(/const MAX_ASR_PROVIDERS = 4;/.test(clientSrc));
+    assert.ok(/providers\.length < MAX_ASR_PROVIDERS \?/.test(clientSrc));
+    assert.ok(/prev\.length >= MAX_ASR_PROVIDERS \? prev :/.test(clientSrc));
+  });
+
+  test('client: a missing onend cannot wedge the recorder', () => {
+    // SpeechRecognition.onend is not guaranteed after stop(); without a
+    // watchdog the pill sat on "处理中…" and every later Alt tap re-entered
+    // the same dead stop() until the page was reloaded.
+    assert.ok(/const WS_STOP_WATCHDOG_MS = 12_000;/.test(clientSrc));
+    assert.ok(/wsStopWatchdog = setTimeout\(\(\) => \{[\s\S]{0,220}finishWebSpeech\(\);/.test(clientSrc));
+    assert.ok(/wsStopWatchdog !== null\) \{ clearTimeout\(wsStopWatchdog\); wsStopWatchdog = null; \}/.test(clientSrc),
+      'onend must clear the watchdog');
+  });
+
   test('client: losing window focus cancels a tap-mode recording', () => {
     // Alt+Tab starts the recording on the Alt keydown, then the window
     // blurs — the mic must not stay hot and no text may be inserted.
@@ -1800,6 +2037,18 @@ test('client: MediaRecorder is started with a timeslice so previews see chunks',
   assert.ok(clientSrc.includes('const tail = recordingChunks.slice(previewChunkIndex);'),
     'previews must upload only the new audio, not the whole recording');
 });
+test('client: a local preview never marks in-flight audio as transcribed', () => {
+  // ondataavailable keeps firing while the preview request is in flight.
+  // Advancing previewChunkIndex to recordingChunks.length AFTER the await
+  // therefore declared that never-uploaded audio as already transcribed, and
+  // the realtime preview silently skipped 1-3 s of speech on every cycle.
+  assert.ok(clientSrc.includes('const sentThrough = previewChunkIndex + tail.length;'),
+    'the reach of the uploaded blob must be snapshotted before the await');
+  assert.ok(clientSrc.includes('previewChunkIndex = sentThrough;'),
+    'the chunk cursor must advance only over what was actually uploaded');
+  assert.ok(!/previewChunkIndex = recordingChunks\.length;/.test(clientSrc),
+    'the cursor must never jump to the live chunk count');
+});
 
 test('client: a blur while getUserMedia is pending cancels the recording', () => {
   // Alt+Tab during the permission prompt started a recording in the
@@ -1832,6 +2081,17 @@ test('client: the mic button polls the real busy state', () => {
     assert.ok(clientSrc.includes('window.__voiceScribeBusy = busy'));
     assert.ok(/busy: busy === true/.test(clientSrc));
   });
+test('client: the settings nav label follows the UI locale', () => {
+  // A fixed bilingual string cannot follow the UI language. The shell owns a
+  // `SlotLabel = string | (() => string)` and resolves it through
+  // resolveSlotLabel on every read (and re-reads on each locale bump).
+  assert.ok(/label: \(\) => ctx\.locale\.bind\(SETTINGS_NS\)\("section\.title"\)/.test(clientSrc),
+    'the section label must be a locale-resolving thunk');
+  assert.ok(clientSrc.includes('"section.title": "语音输入"'), 'zh label text');
+  assert.ok(clientSrc.includes('"section.title": "Voice Input"'), 'en label text');
+  assert.ok(!clientSrc.includes('label: "语音输入 / Voice Input"'),
+    'the hard-coded bilingual label must be gone');
+});
 }
 
 // ---------- client bundle: real composer-adapter behaviour (vm + DOM stub) ----------
@@ -1936,6 +2196,41 @@ function legacyComposerDom() {
   const window = { getSelection: () => null, addEventListener() {}, removeEventListener() {} };
   return { card, editor: textarea, textarea, document, window };
 }
+
+test('client(behaviour): a preview never overwrites what the user typed mid-dictation', () => {
+  const dom = modernComposerDom();
+  const face = loadClientFace(dom);
+  const writes = [];
+  let draft = '基线';
+  face.setDraftChannel({ getDraft: () => draft, setDraft: (text) => { draft = text; writes.push(text); } });
+  face.resetPreviewState();
+  face.writePreviewSpan('基线 说');
+  face.writePreviewSpan('基线 说话');
+  // The user starts typing while still dictating.
+  draft = '用户打的新内容';
+  assert.strictEqual(face.writePreviewSpan('基线 说话中'), false,
+    'a preview must be refused once the composer holds the user text');
+  assert.deepStrictEqual(writes, ['基线 说', '基线 说话'],
+    'the interim must never replace what the user typed');
+  assert.strictEqual(draft, '用户打的新内容');
+  // The final transcript is appended to their text, never rebased over it.
+  assert.strictEqual(face.commitTranscript('基线', '最终文本'), true);
+  assert.strictEqual(draft, '用户打的新内容 最终文本');
+});
+
+test('client(behaviour): speech segments are not glued together', () => {
+  const dom = modernComposerDom();
+  const face = loadClientFace(dom);
+  // Chrome/Edge usually include the separating space, but not always — and
+  // two glued English finals produce "helloworld".
+  assert.strictEqual(face.appendSpeechSegment('hello', 'world'), 'hello world');
+  assert.strictEqual(face.appendSpeechSegment('hello ', 'world'), 'hello world');
+  assert.strictEqual(face.appendSpeechSegment('hello', ' world'), 'hello world');
+  // CJK must never gain an inserted space.
+  assert.strictEqual(face.appendSpeechSegment('你好', '世界'), '你好世界');
+  assert.strictEqual(face.appendSpeechSegment('', 'hi'), 'hi');
+  assert.strictEqual(face.appendSpeechSegment('hi', ''), 'hi');
+});
 
 test('client(behaviour): finds the contenteditable composer editor of DSH 0.1.2+', () => {
   const dom = modernComposerDom();
