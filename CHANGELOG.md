@@ -3,6 +3,41 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.10] — 2026-09-15
+
+### Fixed
+
+- **实时上屏会覆盖用户边说边打的字（HIGH，静默丢字）**：`writePreviewSpan` 无条件整段替换草稿，而中间结果每几百毫秒就来一次（Web Speech）或每 3 秒一次（本地引擎）。录音开始后只要用户往输入框里打一个字，下一次中间结果就把整段草稿换成「基线 + 假设」，且无法找回——`commitTranscript` 随后看到「输入框里还是我写的预览段」而走「从基线重建」分支，用户打的字永远不会回来。现在只有输入框里仍是**插件自己刚写的内容**时才继续预览，一旦被改动就停止上屏，终稿改为追加到用户当前文本之后。
+- **按住说话时松开 Alt 若还按着 Shift/Ctrl，录音不会结束（MED，麦克风常亮）**：结束判定复用了开始时的匹配器，而它要求 `!shiftKey`——Alt+Shift 正是 Windows 的输入法切换，用户按下 Shift 时手正按着 Alt。结果 `holdActive` 卡住、麦克风一直开着到 260/600 秒上限，之后最多 10 分钟的现场环境音被转写进输入框，期间再按 Alt 也没有反应。现在松开判定只看 `key === "Alt"`，忽略其他修饰键。
+- **旧版单端点配置字段永不删除（MED）**：0.2.0 及更早把云端配置写成 `asrUrl`/`asrModel`/`asrApiKey`，宿主每次都把它折叠成服务链的第 1 行，而设置页只写 `asrProviders`——于是每点一次「保存配置」就多复制一行相同端点（直到 4 行上限把真正的服务挤掉，每个还会各耗 60 秒超时）；「清除已保存 Key」也只清链里的行，折叠出来的旧 key 仍在认证，宿主继续报 `hasKey: true`。现在保存与清除都会同时把旧字段置 null 删除。
+- **本地引擎的静音空转写被当成「已插入」（MED）**：SenseVoice 对静音返回空字符串而不是错误，客户端把 `text: ""` 当成功提交，状态条显示「✅ 已插入」而输入框什么都没多，反而多出一个尾随空格（云端引擎此时报 asr-empty、Web Speech 有自己的分支，同一件事三种表现）。现在统一提示「未识别到文字」。
+- **`decodeAudioData` 永不回调时泄漏 AudioContext（MED）**：30 秒硬超时只 reject、不关上下文，而 `finally` 要等解码 settle 才跑——这正是超时当初要兜的 Edge 场景。本地引擎每 3 秒重试一次预览，每次泄漏一个 context，六次之后浏览器的上下文配额用尽，本地引擎与电平条一起失效到刷新页面。现在超时自身关闭上下文。
+- **`recorder.start()` 抛异常会泄漏麦克风（MED）**：只保护了构造函数。设备在 getUserMedia 之后被拔掉/被别的程序抢走时 `start()` 抛错，流还开着、`recording` 仍是 false、`onstop` 永远不会来，麦克风常亮且下一次点按会再开一路新流。现在 `start()` 同样有 try/catch 并释放流与电平条。
+- **上一轮录音的预览会写进新一轮（MED）**：停止后立刻开始下一轮并不被阻止，而上一轮还在飞的预览请求解析后会把自己的假设写进新会话、并用陈旧的计数推进分片游标。现在预览带上「第几轮」标记，轮次变了就丢弃结果。
+- **`onend` 不触发时录音彻底卡死（LOW → 可恢复性）**：`SpeechRecognition.onend` 在 stop() 后并不保证触发（Chromium 系长期存在的问题），一旦不触发，状态条永久停在「处理中…」、`wsRecording` 卡在 true，之后每次按 Alt 都重新进入同一个死掉的 stop()，只能刷新页面。现在 stop() 会武装一个 12 秒看门狗自行收尾（正常路径由 onend 清除，晚到的 onend 也不会重复收尾）。
+- **Web Speech 分段落可能粘连英文（LOW）**：`wsFinalText += transcript` 直接拼接，Chrome/Edge 通常自带前导空格但不是所有情况都有，两段英文会粘成 `helloworld`。现在只在「ASCII 字母数字边界」补一个空格，中文永远不会被插入空格。
+- **热词正则不写 `g` 只替换第一处（LOW）**：`/错词/对词/i` 是 JS/sed 的习惯写法，README 的示例也没有 flags，而 `String.replace` 语义只替换第一处——静默地、且恰好是热词表存在的意义所在。现在未显式写 `g`/`y` 时默认全局；显式写了就完全按原样使用。
+- **本地预润色在「；」后面又补句号（LOW）**：`已完成；` 被补成 `已完成；。`。现在 `；：，、）】》」”’` 等收尾/分隔符都算已收尾。
+- **`get-settings` 遇到非字符串 `asrApiKey` 直接 500（LOW）**：这是设置视图里唯一没有类型保护的字段，手工编辑 `voice-input.json` 写成数字就会让整个「语音输入」设置块空白且不报错（转写本身仍然正常）。
+- **服务链超过宿主上限后 UI 仍能继续添加（LOW）**：宿主保存时只留前 4 行，界面却可以无限加——第 5 行留在屏幕上、保存显示「已保存」、永远不会被执行、刷新后消失。现在到 4 行就不再显示「+ 添加服务」。
+- **模型下载残桩的跳过阈值过低（LOW）**：判据是「文件非空」，0.4.9 已改为尺寸下限，但下限只有 5 MB（真实模型约 228 MB），且截断只有在有 Content-Length 时才能发现——分块代理或连接中断留下的大残桩仍会被永久信任。下限提到 150 MB / 4 KB。
+- **本地预览会漏掉正在录音的那 1–3 秒（LOW）**：预览请求在飞的时候 `ondataavailable` 仍在产分片，而请求返回后游标直接跳到「当前分片数」，把从未上传的音频记成已转写。现在先快照本次请求覆盖到哪里再发请求。
+- **下载失败不取消响应体 / 并发下载竞态 / 二次写响应（LOW）**：镜像回退时被放弃的响应体仍会继续拉 230 MB；两个调用方（两个标签页、设置页与热键并发）会同时通过 `running` 检查并写同一个 `.part`；客户端断开后 `writeJson` 可能对已结束的响应再写一次。
+- **清理只写不读的 `localDownloading`**：看着像有重入保护，实际从未被读过。
+
+### Changed
+
+- **peer 范围补上 `0.1.6-alpha` 线**：semver 的预发布规则要求逐条列出元组，而范围此前只列到 `0.1.5-alpha`，今天的 `alpha` 发行线（`0.1.6-alpha.1`）会一直收到 unmet-peer 告警。这条线此前已被踩过两次，所以这次的回归测试改为**从已发布版本表推导**：新增发行线时测试会直接点名要求补进范围，不再依赖手写清单。
+- **设置页左侧导航标签跟随界面语言**：原先写死中英双语字符串，现在用宿主支持的 `() => string` 标签（`resolveSlotLabel` 每次读取时解析，并随语言修订重新读取）。
+
+### Compatibility
+
+- **逐文件核对 DSH 0.1.5-rc.1**：宿主端 `dsh-host-webserver` 与 0.1.2-rc.1 字节一致，`webServer` / `webRuntime` / `llm` 三个服务、`register({ kind: "prefix" })` 路由、`ctx.webRuntime.trustedHosts`、`ctx.llm.prepareCall` 与流式 `text-delta` / `finish.reason` 全部未变；客户端 `dsh-client-modules` / `dsh-client-ui-renderer` / `dsh-client-locale` / `dsh-client-ui-settings` 四份字节一致，`conversation.input.right` / `settings.section` 插槽契约、`inputActions.setDraft`、`useInput(s => s.draft)`、`[data-composer-card]` + Lexical contenteditable 的 DOM 形态均不变。结论：0.1.2 → 0.1.5 无需改动，插件在新宿主上行为一致。
+
+### Tests
+
+- 177 → **192**：新增 2 项**真实行为**测试（预览不得覆盖用户中途输入 —— 已在修复前的代码上验证必红；语音分段拼接不粘连中英文）、3 项宿主端行为测试（正则热词未写 `g` 仍全量替换、本地预润色不再给「；」补句号、非字符串 `asrApiKey` 不再 500）与 10 项客户端回归（并发下载只起一次、残桩重下、响应体取消、按住说话松开判定、`start()` 失败释放麦克风、空转写不当成功、旧字段随链删除、服务链上限、onend 看门狗、预览分片记账）。
+
 ## [0.4.9] — 2026-09-09
 
 ### Fixed

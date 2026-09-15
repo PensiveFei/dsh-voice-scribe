@@ -56,9 +56,10 @@ dsh plugin --profile web add dsh-voice-scribe   # 重启 dsh web 后生效
 DeepSeek=deep seek|迪普西克
 王小明=王小铭
 
-# 正则替换（标准 $1 语义）
+# 正则替换（标准 $1 语义；未写 flags 时默认全局替换，写 g/y 则按原样使用）
 /老\s*师/老师/
 /\{([^}]+)\}/【$1】/
+/deep\s*seek/DeepSeek/gi
 ```
 
 设置 → 语音输入 页面会显示热词表状态（规则条数 / 文件路径 / 解析错误）。云端与本地离线引擎的转写结果统一应用。
@@ -101,9 +102,10 @@ DeepSeek=deep seek|迪普西克
 
 ## 兼容性 Compatibility
 
-- 需要 **DSH 0.1.0-rc.6 及以上**（含 `0.1.1-rc` / `0.1.2-alpha` / `0.1.3-alpha` / `0.1.5-alpha` 各预发布线）。
+- 需要 **DSH 0.1.0-rc.6 及以上**；peer 范围显式列出每条已发布的预发布线（`0.1.1-rc` / `0.1.2-alpha` / `0.1.3-alpha` / `0.1.5-alpha` / `0.1.6-alpha`），semver 的预发布规则要求逐条列出元组，否则该线宿主会一直收到 unmet-peer 告警。
 - 输入框插槽 `conversation.input.right` 在 DSH **0.1.2** 起由 `<textarea>` 改为 Lexical `contenteditable`：0.4.8 起两种形态都支持（读取实时草稿走 `useInput`，写入走 `inputActions.setDraft`）。
 - 界面没有麦克风按钮（旧壳子没有该插槽）时，**Alt 热键仍然可用**。
+- **实测核对**：0.4.10 逐文件对照了 **DSH 0.1.5-rc.1** 与 0.1.2-rc.1 —— 宿主端 `dsh-host-webserver` 两份字节一致，`webServer` / `webRuntime` / `llm` 三个服务与 `ctx.llm.prepareCall` / 流式 `text-delta` / `finish.reason` 均无变化；客户端 `dsh-client-modules` / `dsh-client-ui-renderer` / `dsh-client-locale` / `dsh-client-ui-settings` 四份字节一致，插槽注册、`setDraft`、`useInput(s => s.draft)`、`[data-composer-card]` + contenteditable 的 DOM 形态全部不变。
 
 ## 开发 Dev
 
