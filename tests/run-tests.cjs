@@ -22,9 +22,14 @@ async function testAsync(name, fn) {
   catch (e) { failed++; console.error('  ❌', name, '—', e.message); }
 }
 
-const src = fs.readFileSync(path.join(ROOT, 'lib', 'index.js'), 'utf8');
-const clientSrc = fs.readFileSync(path.join(ROOT, 'lib', 'client.js'), 'utf8');
-const utilsSrc = fs.readFileSync(path.join(ROOT, 'lib', 'host-utils.js'), 'utf8');
+// Normalise line endings before any source-shape assertion: several of them
+// count characters between two markers (e.g. [\s\S]{0,420}), so a CRLF
+// checkout — the default on Windows with core.autocrlf=true — would make
+// them fail locally while the Linux CI runner stayed green.
+const readSource = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+const src = readSource(path.join('lib', 'index.js'));
+const clientSrc = readSource(path.join('lib', 'client.js'));
+const utilsSrc = readSource(path.join('lib', 'host-utils.js'));
 
 // ---------- server-side: source shape (needs DSH host to mount) ----------
 test('host: exports name and inject', () => {
@@ -188,8 +193,6 @@ test('client: supports a custom hotkey option (custom:<combo>)', () => {
   assert.ok(clientSrc.includes('"hotkey.custom"'));
   assert.ok(clientSrc.includes('"hotkey.customHint"'));
   // Status strings surface the real hotkey instead of a hardcoded Alt.
-  // (The alias is spelled without the substring "key" on purpose — the
-  // security test rejects setStatus(...) texts containing "key".)
   assert.ok(clientSrc.includes('请再按一次 " + activeTriggerName()'));
 });
 

@@ -1,0 +1,5 @@
+# Check out every text file with LF, whatever core.autocrlf says.
+# Without this a Windows checkout is CRLF, which silently breaks the
+# distance-bounded source assertions in tests/run-tests.cjs (each line
+# counts one character more than on the Linux CI runner).
+* text=auto eol=lf
