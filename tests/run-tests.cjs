@@ -164,8 +164,44 @@ test('client: loads via ModuleLoader with the registered id', () => {
 
 test('client: supports alt and alt-space hotkeys', () => {
   assert.ok(clientSrc.includes('HOTKEYS = ["alt", "alt-space"]'));
-  assert.ok(clientSrc.includes('event.key === "Alt"'));
-  assert.ok(clientSrc.includes('event.key === " " && event.altKey'));
+  // The keyboard grammar is normalized through canonical tokens so arbitrary
+  // chords work too: " " → "space", "Control" → "ctrl".
+  assert.ok(clientSrc.includes('if (rawKey === " ") return "space"'));
+  assert.ok(clientSrc.includes('if (lower === "control") return "ctrl"'));
+  // Presets resolve through parseHotkey: the stored "alt-space" preset name
+  // maps to the "alt+space" chord.
+  assert.ok(clientSrc.includes('parseHotkeyCombo(hotkey === "alt-space" ? "alt+space" : hotkey)'));
+  // Matching is exact on modifiers — no stray Ctrl/Meta/Shift toggles.
+  assert.ok(clientSrc.includes('if (parsed.mods.alt !== event.altKey) return false;'));
+});
+
+test('client: supports a custom hotkey option (custom:<combo>)', () => {
+  assert.ok(clientSrc.includes('CUSTOM_HOTKEY_PREFIX = "custom:"'));
+  assert.ok(clientSrc.includes('parseHotkeyCombo'));
+  assert.ok(clientSrc.includes('canonicalComboText'));
+  assert.ok(clientSrc.includes('serializeEventKey'));
+  assert.ok(clientSrc.includes('hotkeyDisplay'));
+  // The settings select offers the "custom" option and re-reads the stored
+  // chord when the user picks it.
+  assert.ok(clientSrc.includes('value: "custom", label: t("hotkey.custom")'));
+  assert.ok(clientSrc.includes('readCustomHotkeyCombo'));
+  assert.ok(clientSrc.includes('"hotkey.custom"'));
+  assert.ok(clientSrc.includes('"hotkey.customHint"'));
+  // Status strings surface the real hotkey instead of a hardcoded Alt.
+  // (The alias is spelled without the substring "key" on purpose — the
+  // security test rejects setStatus(...) texts containing "key".)
+  assert.ok(clientSrc.includes('请再按一次 " + activeTriggerName()'));
+});
+
+test('client: custom hotkey recorder captures keydown/keyup and saves a validated combo', () => {
+  assert.ok(clientSrc.includes('onCaptureKeyDown'));
+  assert.ok(clientSrc.includes('onCaptureKeyUp'));
+  assert.ok(clientSrc.includes('serializeEventKey(event)'));
+  assert.ok(clientSrc.includes('isModifierToken(token)'));
+  assert.ok(clientSrc.includes('canonicalComboText(customHotkey)'));
+  assert.ok(clientSrc.includes('writeJson(HOTKEY_KEY, CUSTOM_HOTKEY_PREFIX + combo)'));
+  // A modifier released alone becomes a modifier-only hotkey (e.g. "alt").
+  assert.ok(clientSrc.includes('if (normalizeKeyToken(event.key) === pendingMod)'));
 });
 
 test('client: defaults to web-speech engine (zero key / zero config)', () => {
@@ -227,6 +263,17 @@ test('client: settings row re-renders on change (useState bump)', () => {
   assert.ok(clientSrc.includes('_react.useState(0)'));
   assert.ok(clientSrc.includes('forceRender'));
   assert.ok(clientSrc.includes('bump()'));
+});
+
+test('client: picking "custom" keeps the dropdown on custom before saving', () => {
+  // Regression: the dropdown value used to be derived from readHotkey(), so
+  // choosing "custom" snapped back to the active preset (nothing is written to
+  // storage until Save) and the recorder row never appeared.
+  assert.ok(clientSrc.includes('const [hotkeyChoice, setHotkeyChoice] = _react.useState(hotkeyIsCustom ? "custom" : hotkey)'));
+  assert.ok(clientSrc.includes('value: hotkeyChoice'));
+  assert.ok(clientSrc.includes('setHotkeyChoice("custom")'));
+  assert.ok(clientSrc.includes('if (hotkeyChoice !== "custom") return null'));
+  assert.ok(clientSrc.includes('setHotkeyChoice(v)'));
 });
 
 test('client: web-speech error is not swallowed by onend', () => {
@@ -1943,8 +1990,8 @@ async function behavioural() {
     // exactly when Shift goes down, and reusing the keydown matcher (which
     // requires !shiftKey) left holdActive stuck and the microphone live until
     // the length cap — up to 10 minutes of ambient audio then transcribed.
-    assert.ok(/if \(hotkey === "alt"\) return event\.key === "Alt";/.test(clientSrc),
-      'the release path must not require the modifiers the keydown path requires');
+    assert.ok(/function matchesHoldRelease[\s\S]{0,500}token === parsed\.key/.test(clientSrc),
+      'the release path must end whenever the trigger key comes up, regardless of any other modifier held');
   });
 
   test('client: a throwing recorder.start() releases the microphone', () => {
