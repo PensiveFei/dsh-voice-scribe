@@ -1,0 +1,127 @@
+name: Publish to npm
+
+# 通过 npm Trusted Publishing（OIDC）发布，全程不需要任何长期 token，也不需要 OTP。
+#
+# 触发方式
+#   1) GitHub Release 被发布（tag 形如 vX.Y.Z，必须与 package.json 的 version 一致）
+#      —— release 事件的 workflow 定义取自默认分支，所以本文件合进 main 之后，
+#         再给历史 tag（例如 v0.4.10）补建 Release 也能自动发布。
+#   2) 手动：gh workflow run publish.yml --ref main -f publish_ref=refs/tags/v0.4.10
+#
+# 首次使用前要在 npmjs.com 配一次 Trusted Publisher（只能人工操作）：
+#   https://www.npmjs.com/package/dsh-voice-scribe/access
+#     Provider:              GitHub Actions
+#     Organization or user:  PensiveFei
+#     Repository:            dsh-voice-scribe
+#     Workflow filename:     publish.yml      <- 必须与本文件名逐字一致
+#     Environment:           留空
+#
+# 排查
+#   - 404 / npm-trusted-publisher-not-configured -> npm 端的仓库名或 workflow 文件名对不上
+#   - OIDC token not found                       -> 少了 id-token: write
+#   - npm 版本低于 11.5.1                         -> Trusted Publishing 不可用
+#
+# 安全说明：本文件不引用任何 secret。若将来要加 secret，先想清楚谁有权改这个 workflow
+# —— 能改它的人就能让 CI 拿到仓库里的全部 secrets。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish_ref:
+        description: '要发布的 ref（留空 = 用本次运行的 ref）。历史 tag 走这里，例如 refs/tags/v0.4.10'
+        required: false
+        default: ''
+      dry_run:
+        description: '只演练不发布（true = npm publish --dry-run）'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: gate and publish (Trusted Publishing)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.publish_ref || github.ref }}
+
+      # registry-url 是必需的：让 npm publish 解析到公共 registry，也让 npm 的 OIDC
+      # 客户端知道去哪个 registry 换发布用的短期凭据。这里不设 NODE_AUTH_TOKEN。
+      - name: Set up Node (npm >= 11.5.1 required for Trusted Publishing)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Check toolchain
+        run: |
+          node --version
+          NPMV=$(npm --version)
+          echo "npm $NPMV"
+          MAJOR=${NPMV%%.*}
+          MINOR=${NPMV#*.}
+          MINOR=${MINOR%%.*}
+          if [ "$MAJOR" -lt 11 ] || { [ "$MAJOR" -eq 11 ] && [ "$MINOR" -lt 5 ]; }; then
+            echo "::error::npm $NPMV is below 11.5.1 -- Trusted Publishing needs 11.5.1+"
+            exit 1
+          fi
+
+      - name: Guard package.json version against the ref
+        env:
+          PUBLISH_REF: ${{ inputs.publish_ref }}
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          case "$PUBLISH_REF" in
+            refs/tags/*) REF="${PUBLISH_REF#refs/tags/}" ;;
+            "")          REF="${GITHUB_REF_NAME}" ;;
+            *)           REF="${PUBLISH_REF##*/}" ;;
+          esac
+          echo "package.json=$PKG  ref=$REF"
+          case "$REF" in
+            v*)
+              TAG="${REF#v}"
+              if [ "$PKG" != "$TAG" ]; then
+                echo "::error::package.json version ($PKG) does not match tag ($REF)"
+                exit 1
+              fi
+              echo "OK: version and tag agree"
+              ;;
+            *) echo "not a vX.Y.Z ref -- skipping the tag guard" ;;
+          esac
+
+      - name: Refuse to republish a version that is already on npm
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VER" version >/dev/null 2>&1; then
+            echo "::error::$NAME@$VER is already published -- bump the version instead of republishing"
+            exit 1
+          fi
+          echo "OK: $NAME@$VER is not on npm yet"
+
+      - name: Release gate (tests, lint, security scan)
+        run: |
+          npm test
+          npm run lint
+          npm run security
+
+      # 不带 token、不带 --provenance：Trusted Publishing 会自动生成 provenance。
+      - name: Publish to npm (OIDC, no token)
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "dry-run: 只演练，不上传"
+            npm publish --access public --dry-run
+          else
+            npm publish --access public
+          fi
