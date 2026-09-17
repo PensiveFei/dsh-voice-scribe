@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **麦克风设备可选、可见（issue #5）**：`getUserMedia({audio:true})` 的「默认设备」由**浏览器**决定（Chrome 按站点选择，其次按自己 profile 的设备排序），与 Windows 默认设备可以不同，其第一名可能是**纯静音的虚拟设备**（如装过 Steam 后的 `Steam Streaming Microphone`）——症状是状态条显示「🎙 录音中…」、电平条不动、转写为空，看起来像插件坏了。现在：设置 → 语音输入 新增「**麦克风设备**」（按浏览器持久化，保留「系统默认（由浏览器决定）」），指定后以 `{ deviceId: { exact } }` 精确请求；**录音中状态条追加实际生效的设备名**（`track.label`，过长截断），设置页显示「上次录音实际使用的是：…」；设置页只用 `enumerateDevices()`（**不会为了列设备而点亮麦克风**，未授权时显示占位名），并监听 `devicechange` 跟随蓝牙设备上下线刷新。
+- **静音与「没听清」不再混为一谈**：电平条在频谱柱之外增加**时域峰值**统计，转写为空时据此追加「输入电平≈0（可能是设备选错、麦克风被静音，或被其他程序占用）」——同一句「未识别到文字」现在能指向真因；峰值在每轮录音开始时重置为"未知"，Web Speech 路径（不走电平条）同样重置，不会拿上一轮的数值误报。
+
+### Fixed
+
+- **选定的麦克风失效后卡死在报错上**：设备被拔掉/禁用/站点数据被清时，`deviceId: { exact }` 抛 `OverconstrainedError`，此前只显示「无法访问麦克风：OverconstrainedError」。现在会清除失效记录、回退到系统默认设备，并在状态条说明「之前选择的麦克风已不可用，已回退到系统默认设备」。
+
+### Tests
+
+- 195 → **201**：新增 3 项客户端**真实行为**测试（pin 后约束为 `exact`、静音判定阈值、长设备名截断）与 3 项形状/隐私回归（失效设备回退并清除记录、设置页设备选择器不得调用 `getUserMedia`、电平峰值接线含 Web Speech 重置）。测试沙箱的 localStorage 桩升级为可读写的 `Map`：此前 bundle 读的是 `window.localStorage`（恒为空），凡是设置类逻辑在沙箱里都覆盖不到——这个坑顺带修掉了。
+
 ## [0.4.10] — 2026-09-15
 
 ### Fixed

@@ -513,7 +513,9 @@ test('client: releasing before an async start lands still stops the recording', 
   // getUserMedia resolves after the user may have released the key — the
   // start path must consume holdStopPending and stop immediately.
   assert.ok(clientSrc.includes('holdStopPending'));
-  assert.ok(/recording = true;[\s\S]{0,800}if \(holdStopPending\)/.test(clientSrc), 'startRecording must consume holdStopPending');
+  // The bound is a locality guard, not a length assertion: the device fall-back
+  // and the level-peak reset legitimately sit in this span.
+  assert.ok(/recording = true;[\s\S]{0,900}if \(holdStopPending\)/.test(clientSrc), 'startRecording must consume holdStopPending');
   assert.ok(/wsRecording = true;[\s\S]{0,800}if \(holdStopPending\)/.test(clientSrc), 'startWebSpeech must consume holdStopPending');
 });
 
@@ -2151,7 +2153,7 @@ test('client: the settings nav label follows the UI locale', () => {
  * composer adapters are pure DOM logic — exactly what broke when DSH 0.1.2
  * replaced the composer textarea with a Lexical contenteditable.
  */
-function loadClientFace(dom) {
+function loadClientFace(dom, storage) {
   const vm = require('node:vm');
   const registrations = [];
   dom.window.__ModuleLoader__ = { load: (registration) => registrations.push(registration) };
@@ -2159,7 +2161,15 @@ function loadClientFace(dom) {
     window: dom.window,
     document: dom.document,
     navigator: { language: 'zh-CN' },
-    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    // A Map turns the stub into real storage so tests can exercise settings
+    // that are read from localStorage (e.g. the pinned capture device).
+    localStorage: storage instanceof Map
+      ? {
+        getItem: (key) => (storage.has(key) ? storage.get(key) : null),
+        setItem: (key, value) => { storage.set(key, String(value)); },
+        removeItem: (key) => { storage.delete(key); }
+      }
+      : { getItem: () => null, setItem: () => {}, removeItem: () => {} },
     console,
     setTimeout,
     clearTimeout,
@@ -2169,6 +2179,10 @@ function loadClientFace(dom) {
     fetch: async () => ({ ok: false, status: 0, json: async () => ({}) }),
     URL
   };
+  // The bundle reads window.localStorage (not the bare global), so the stub has
+  // to live on the DOM window as well — otherwise every setting silently falls
+  // back to its default in the sandbox.
+  dom.window.localStorage = sandbox.localStorage;
   sandbox.globalThis = sandbox;
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'lib', 'client.js'), 'utf8'), vm.createContext(sandbox), {
     filename: 'lib/client.js'
@@ -2375,6 +2389,74 @@ test('client(behaviour): rollback only rewrites a composer still holding the pre
   face.rollbackPreview('基线');
   assert.deepStrictEqual(writes, ['基线 预览', '基线', '基线 预览'], 'an edited draft must be left alone');
   assert.strictEqual(draft, '用户改了');
+});
+
+test('client(behaviour): the pinned microphone becomes an exact getUserMedia constraint', () => {
+  // A device-less getUserMedia({audio:true}) is resolved by the BROWSER, not by
+  // the OS: that is how a silent virtual microphone (Steam Streaming
+  // Microphone, a dead Bluetooth HFP endpoint) ends up recording while the pill
+  // says 录音中 and nothing is transcribed.
+  const store = new Map();
+  const face = loadClientFace(modernComposerDom(), store);
+  // Field-wise assertions: the bundle runs in a vm realm, so its objects have a
+  // different Object.prototype and deepStrictEqual would reject them.
+  assert.strictEqual(face.audioConstraints().audio, true,
+    'with nothing pinned the request stays device-less');
+  store.set('dsh-voice-input:device', JSON.stringify('mic-usb-camera'));
+  const pinned = face.audioConstraints();
+  assert.strictEqual(typeof pinned.audio, 'object', 'a pinned device changes the constraint shape');
+  assert.strictEqual(pinned.audio.deviceId.exact, 'mic-usb-camera',
+    'a pinned device is requested exactly — a soft preference would degrade back to the default');
+});
+
+test('client(behaviour): the silence hint only fires for a silent take', () => {
+  const face = loadClientFace(modernComposerDom());
+  assert.strictEqual(face.silenceHint(null), '', 'an unknown level must never be reported as silence');
+  assert.strictEqual(face.silenceHint(undefined), '');
+  assert.match(face.silenceHint(0), /输入电平≈0/, 'a dead-flat take is the silent-device signature');
+  assert.match(face.silenceHint(0.004), /输入电平≈0/);
+  assert.strictEqual(face.silenceHint(0.02), '', 'faint but real audio keeps the plain hint');
+});
+
+test('client(behaviour): a long device label is truncated for the status pill', () => {
+  const face = loadClientFace(modernComposerDom());
+  assert.strictEqual(face.shortDeviceLabel('  麦克风 (USB 2.0 Camera)  '), '麦克风 (USB 2.0 Camera)');
+  assert.strictEqual(face.shortDeviceLabel(null), '');
+  const long = '默认 - 麦克风 (USB 2.0 Camera) 名称很长';
+  const short = face.shortDeviceLabel(long);
+  assert.strictEqual(short.length, 22);
+  assert.ok(long.startsWith(short.slice(0, -1)), 'truncation keeps the head of the real name');
+});
+
+test('client: a vanished pinned device falls back to the default and is forgotten', () => {
+  assert.ok(/pinnedDevice && \(errorName === "OverconstrainedError" \|\| errorName === "NotFoundError"\)/.test(clientSrc));
+  assert.ok(clientSrc.includes('writeDeviceId("");'), 'the dead id must not be retried on every take');
+  assert.ok(clientSrc.includes('deviceNotice'), 'the fall-back has to be visible, never silent');
+});
+
+test('client: the device picker never opens the microphone just to list devices', () => {
+  assert.ok(clientSrc.includes('const DEVICE_KEY = "dsh-voice-input:device";'));
+  assert.ok(clientSrc.includes('"device.title": "麦克风设备"'), 'zh label');
+  assert.ok(clientSrc.includes('"device.title": "Microphone device"'), 'en label');
+  assert.ok(clientSrc.includes('"device.noteEmpty"'));
+  assert.ok(clientSrc.includes('addEventListener("devicechange", sync)'), 'Bluetooth devices come and go');
+  const rowStart = clientSrc.indexOf('function VoiceScribeRow');
+  const row = clientSrc.slice(rowStart, clientSrc.indexOf('function MicrophoneButton', rowStart));
+  assert.ok(row.length > 1000, 'the row source must actually be sliced');
+  // Comments are stripped: the row documents WHY it stays away from
+  // getUserMedia, and that sentence must not trip the assertion itself.
+  const rowCode = row.split('\n').map((line) => line.replace(/\/\/.*$/, '')).join('\n');
+  assert.ok(!/getUserMedia/.test(rowCode),
+    'the settings row must not light the mic indicator just to enumerate devices');
+});
+
+test('client: the level meter also tracks an absolute peak for the silence hint', () => {
+  assert.ok(clientSrc.includes('getFloatTimeDomainData'));
+  assert.ok(clientSrc.includes('recordingPeak = 0;'), 'a live analyser means a known level');
+  assert.ok(/recordingPeak = null;/.test(clientSrc), 'every start resets it to "unknown"');
+  assert.ok(clientSrc.includes('silenceHint(recordingPeak)'));
+  assert.ok(/recognition\.start\(\);[\s\S]{0,260}recordingPeak = null;/.test(clientSrc),
+    'Web Speech never runs the meter — its start must reset the peak to "unknown" too');
 });
 
 const { pathToFileURL } = require('node:url');
