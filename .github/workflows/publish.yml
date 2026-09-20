@@ -59,7 +59,7 @@ jobs:
       # registry-url 是必需的：让 npm publish 解析到公共 registry，也让 npm 的 OIDC
       # 客户端知道去哪个 registry 换发布用的短期凭据。这里不设 NODE_AUTH_TOKEN。
       - name: Set up Node (npm >= 11.5.1 required for Trusted Publishing)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
