@@ -21,6 +21,14 @@ name: Publish to npm
 #   - OIDC token not found                       -> 少了 id-token: write
 #   - npm 版本低于 11.5.1                         -> Trusted Publishing 不可用
 #
+# ⚠️ 首次"真实"运行才是 Trusted Publisher 配置的验证：npm 的 OIDC 交换失败会被 CLI
+#    静默吞掉（lib/utils/oidc.js 设计上不抛错），所以 --dry-run 全绿并不代表 TP 配好了。
+#    真正的校验发生在 npm publish 写 registry 的那一刻；未配置时报 404 / E404。
+#
+# 发布 ref 必须是 tag：workflow_dispatch 不给 publish_ref 时用的是本次运行的 ref
+# （通常是 main），而 main 通常领先于最近 tag，那样发出去的字节不属于任何 tag ——
+# 这种情况现在会被直接拒绝，必须显式传 publish_ref=refs/tags/vX.Y.Z。
+#
 # 安全说明：本文件不引用任何 secret。若将来要加 secret，先想清楚谁有权改这个 workflow
 # —— 能改它的人就能让 CI 拿到仓库里的全部 secrets。
 
@@ -52,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.publish_ref || github.ref }}
 
@@ -97,7 +105,13 @@ jobs:
               fi
               echo "OK: version and tag agree"
               ;;
-            *) echo "not a vX.Y.Z ref -- skipping the tag guard" ;;
+            *)
+              # A branch ref publishes whatever that branch happens to contain
+              # under its own package.json version — main is normally AHEAD of
+              # the last tag, so those bytes would match no tag at all.
+              echo "::error::refusing to publish from a non-tag ref ($REF) -- pass publish_ref=refs/tags/vX.Y.Z"
+              exit 1
+              ;;
           esac
 
       - name: Refuse to republish a version that is already on npm
