@@ -2,11 +2,14 @@ name: Publish to npm
 
 # 通过 npm Trusted Publishing（OIDC）发布，全程不需要任何长期 token，也不需要 OTP。
 #
-# 触发方式
-#   1) GitHub Release 被发布（tag 形如 vX.Y.Z，必须与 package.json 的 version 一致）
-#      —— release 事件的 workflow 定义取自默认分支，所以本文件合进 main 之后，
-#         再给历史 tag（例如 v0.4.10）补建 Release 也能自动发布。
-#   2) 手动：gh workflow run publish.yml --ref main -f publish_ref=refs/tags/v0.4.10
+# 触发方式（tag 形如 vX.Y.Z，且必须与 package.json 的 version 一致）
+#   1) 推送版本 tag —— 首选：git push origin v0.5.0 即发布。
+#   2) GitHub Release 被发布 —— release 事件的 workflow 定义取自默认分支，
+#      所以本文件合进 main 之后，给历史 tag（例如 v0.4.10）补建 Release 也能发。
+#      ⚠️ 2026-09-24 实测：用 API（gh release create）建 Release 时**这个事件没有触发**
+#         工作流（Actions 里 event=release 的运行数为 0）。补发历史 tag 请优先走第 3 条，
+#         别因为「绿了」就以为发出去了 —— 那次是用手动 dispatch 才真正发出去的。
+#   3) 手动：gh workflow run publish.yml --ref main -f publish_ref=refs/tags/v0.4.10
 #
 # 首次使用前要在 npmjs.com 配一次 Trusted Publisher（只能人工操作）：
 #   https://www.npmjs.com/package/dsh-voice-scribe/access
@@ -33,6 +36,11 @@ name: Publish to npm
 # —— 能改它的人就能让 CI 拿到仓库里的全部 secrets。
 
 on:
+  # 首选路径：推版本 tag 即发布。push 事件由人（或 PAT）触发，投递可靠，
+  # 且 tag 本身就是「要发什么字节」的唯一事实来源。
+  push:
+    tags: ['v*']
+  # 补发历史 tag 时的备用路径。
   release:
     types: [published]
   workflow_dispatch:
