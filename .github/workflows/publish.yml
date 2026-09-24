@@ -6,9 +6,10 @@ name: Publish to npm
 #   1) 推送版本 tag —— 首选：git push origin v0.5.0 即发布。
 #   2) GitHub Release 被发布 —— release 事件的 workflow 定义取自默认分支，
 #      所以本文件合进 main 之后，给历史 tag（例如 v0.4.10）补建 Release 也能发。
-#      ⚠️ 2026-09-24 实测：用 API（gh release create）建 Release 时**这个事件没有触发**
-#         工作流（Actions 里 event=release 的运行数为 0）。补发历史 tag 请优先走第 3 条，
-#         别因为「绿了」就以为发出去了 —— 那次是用手动 dispatch 才真正发出去的。
+#      ⚠️ 这个事件的投递不稳：2026-09-24 给 v0.4.10 补建 Release 时它**没有触发**
+#         （Actions 里 event=release 的运行数为 0，最后靠第 3 条手动 dispatch 才发出去），
+#         而同一天给 v0.5.0 建 Release 时它又正常触发了。所以补发历史 tag 请优先走第 3 条，
+#         别因为「绿了」就以为发出去了 —— 要看日志里有没有 `+ dsh-voice-scribe@X.Y.Z`。
 #   3) 手动：gh workflow run publish.yml --ref main -f publish_ref=refs/tags/v0.4.10
 #
 # 首次使用前要在 npmjs.com 配一次 Trusted Publisher（只能人工操作）：
@@ -122,17 +123,24 @@ jobs:
               ;;
           esac
 
-      - name: Refuse to republish a version that is already on npm
+      # 两条触发并存后，「推 tag」和「建 Release」会对同一个版本各跑一次。
+      # 已发布不是错误，只是无事可做 —— 跳过发布步骤并留一条 warning，
+      # 既幂等，也不会把「发过了」伪装成绿。
+      - name: Check whether this version is already on npm
+        id: published
         run: |
           NAME=$(node -p "require('./package.json').name")
           VER=$(node -p "require('./package.json').version")
           if npm view "$NAME@$VER" version >/dev/null 2>&1; then
-            echo "::error::$NAME@$VER is already published -- bump the version instead of republishing"
-            exit 1
+            echo "state=already" >> "$GITHUB_OUTPUT"
+            echo "::warning::$NAME@$VER is already on npm -- skipping the publish steps (nothing to do)"
+          else
+            echo "state=new" >> "$GITHUB_OUTPUT"
+            echo "OK: $NAME@$VER is not on npm yet"
           fi
-          echo "OK: $NAME@$VER is not on npm yet"
 
       - name: Release gate (tests, lint, security scan)
+        if: steps.published.outputs.state == 'new'
         run: |
           npm test
           npm run lint
@@ -140,6 +148,7 @@ jobs:
 
       # 不带 token、不带 --provenance：Trusted Publishing 会自动生成 provenance。
       - name: Publish to npm (OIDC, no token)
+        if: steps.published.outputs.state == 'new'
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             echo "dry-run: 只演练，不上传"
