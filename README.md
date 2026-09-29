@@ -16,9 +16,20 @@ Voice input for DeepSeek Harness: tap or hold Alt to talk, get text in the compo
 
 ## 安装 Install
 
+**官方插件面板（推荐）**：dsh 侧边栏 → **Plugins** → 安装，填入下面任一种 spec——插件管理器同时支持 npm 包名与 GitHub 地址：
+
+```
+dsh-voice-scribe                      # npm 包名
+github:PensiveFei/dsh-voice-scribe    # 直接从 GitHub 仓库装（会先做一次 git ls-remote 预检）
+```
+
+**命令行**：
+
 ```bash
 dsh plugin --profile web add dsh-voice-scribe   # 重启 dsh web 后生效
 ```
+
+> 桌面端（Electron）跑的是与 web **同一套宿主与插件体系**（`@deepseek-ai/dsh-desktop-host` 依赖 `dsh-app-boot` / `dsh-host-webserver` / `dsh-home-paths`），同一个插件包两端通用。
 
 ## 使用 Usage
 
@@ -99,27 +110,36 @@ DeepSeek=deep seek|迪普西克
 
 本地引擎音频不出本机；Web Speech 由浏览器语音服务处理；云端 ASR 的 key 只存服务端。
 
-## 与同类插件对比 Compare
+## 与官方语音输入对比 Compare with the official voice input
 
-同为 DSH 的语音 / 输入增强插件，主要差异（截至 2026-09）：
+DSH 从 0.1.7 起自带一个**实验性**的官方语音输入 —— `@deepseek-ai/dsh-experimental-voice-input-bundle`，同样使用**本地 SenseVoice**。它**默认是关闭的**，启用方式：
 
-| | **dsh-voice-scribe**（本插件） | [dsh-better-input](https://github.com/DIAG5/dsh-better-input) |
+1. dsh 侧边栏 → **Plugins** → 打开 **Voice Input**（蓝色波形图标）
+2. 按提示进入 bundle 详情 → **Download and prepare** 下载模型（会显示磁盘 / 内存 / 耗时预估，下载源可选 Automatic / Hugging Face / HF-Mirror）
+3. 点模型选择器与发送键之间的 🎤 → 录音 → 点 **Stop** 把转写写进草稿
+
+两者都用本地 SenseVoice、音频都不出本机，取舍如下（官方一列取自其 README 与 `docs/subsystems/voice-input.md`，截至 2026-09）：
+
+| | **dsh-voice-scribe**（本插件） | 官方 voice input（experimental） |
 |---|---|---|
-| 定位 | 专注语音输入 | 输入增强套件（语音 + 提示词优化 + 文件转 Markdown 等） |
-| 本地离线识别 | ✅ SenseVoice，零 key，音频不出本机 | ❌ 仅浏览器原生识别 |
-| 浏览器 Web Speech | ✅ 回退 | ✅ |
-| 云端 ASR 服务链 | ✅ 多 provider 故障切换 | ❌ |
-| 热词替换表 hot.txt | ✅ | ❌ |
-| 本地规则预润色（省 token） | ✅ 0.4.2 起 | ❌ |
-| AI 润色（复用 DSH 模型） | ✅ | ✅ |
-| 按住说话 / 录音电平 | ✅ | 录音自动停止（无电平） |
-| 提示词优化 / 文件转 Markdown | ❌ | ✅ |
+| 获取 | 第三方插件，Plugins 面板 / npm 安装 | 随 dsh 分发，**默认关闭**，Plugins 面板启用 |
+| 识别引擎 | 本地 SenseVoice 离线默认 + 浏览器 Web Speech 回退 + **云端服务链（多 provider 故障切换）** | 本地 SenseVoice；**云端识别需自行注册 provider 与凭据** |
+| 触发方式 | **Alt 热键（可自定义任意组合键）/ 按住说话 / 🎤 按钮** | 🎤 按钮 → 录音工具条 → 点 **Stop** |
+| 实时上屏 | ✅ 边说边出（浏览器引擎逐字、本地引擎每 3 秒） | ❌ 官方列为未做（no streaming captions） |
+| 热词 / 规则替换 | ✅ `hot.txt`（字面 + 正则，默认全量替换） | ❌ |
+| 润色 | ✅ 复用 DSH 模型 + 本地规则预润色（省 token） | ❌ |
+| 语言 | 中文 / English / 粤语 / 日本語 / 한국어 可切换 | 取决于 provider 声明的 languages |
+| 设备与诊断 | 设备选择器 + 录音中显示实际设备名 + 电平峰值归因 | 工具条内有电平；未见设备选择 |
+| 模型准备体验 | 首次使用后台下载 + 进度轮询 | **步骤清单 + 磁盘/内存/耗时预估 + 下载源可选** |
+| 音频去向 | 本地引擎不出本机；云端走你自己配置的端点 | 本地＝**Host 机器**（官方注明可能与浏览器不是同一台） |
 
-只想要**更省心、更私密的语音输入** → dsh-voice-scribe；需要**一整套输入增强**（提示词优化、文件转 Markdown） → dsh-better-input。两者可并存。
+**怎么选**：只要「点一下说话、点一下停」并希望**官方原生集成** → 用官方；需要**热键 / 按住说话、边说边上屏、热词纠正、AI 润色、云端多 provider 故障切换、自定义组合键** → 用本插件。
+
+**两者可以并存**：官方插件用它自己的 🎤 按钮，本插件用 Alt 热键和另一个 🎤 按钮（悬停提示会写明是哪个），互不冲突。
 
 ## 已知限制 Known limitations
 
-- 输入框里含 `@` 引用芯片（如 `@文件`）时，DSH 只提供「整段替换草稿」的接口，转写结果插入会把芯片展开成纯文本；先发送或清空草稿再听写可避免。
+- 输入框里含 `@` 引用芯片（如 `@文件`）时，插件目前通过「整段替换草稿」写入，会把芯片展开成纯文本；先发送或清空草稿再听写可避免。（DSH 0.1.7 起新增了可按选区插入、不覆盖引用芯片的 `insertText(span)` 接口，适配已记入待办。）
 - 浏览器 Web Speech 依赖外部语音服务，国内网络下通常需要改用本地离线或云端引擎。
 
 ## 兼容性 Compatibility
@@ -127,6 +147,8 @@ DeepSeek=deep seek|迪普西克
 - 需要 **DSH 0.1.0-rc.6 及以上**；peer 范围显式列出每条已发布的预发布线（`0.1.1-rc` / `0.1.2-alpha` / `0.1.3-alpha` / `0.1.5-alpha` / `0.1.6-alpha`），semver 的预发布规则要求逐条列出元组，否则该线宿主会一直收到 unmet-peer 告警。
 - 输入框插槽 `conversation.input.right` 在 DSH **0.1.2** 起由 `<textarea>` 改为 Lexical `contenteditable`：0.4.8 起两种形态都支持（读取实时草稿走 `useInput`，写入走 `inputActions.setDraft`）。
 - 界面没有麦克风按钮（旧壳子没有该插槽）时，**Alt 热键仍然可用**。
+- **桌面端**：官方桌面应用是 Electron 外壳，跑的是与 web 同一套宿主与插件体系（`@deepseek-ai/dsh-desktop-host` 依赖 `dsh-app-boot` / `dsh-host-webserver` / `dsh-home-paths` / `dsh-client-connection`），**同一个插件包两端通用**。
+- **0.1.7-rc.2 核对**：`inputActions.setDraft()` 与 `useInput(s => s.draft)` 均未变化，插件不受影响；同版本新增 `captureInsertion()` / `insertText(text, span)`（按选区插入、一步可撤销、不覆盖引用芯片），适配排期见仓库待办。
 - **实测核对**：0.4.10 逐文件对照了 **DSH 0.1.5-rc.1** 与 0.1.2-rc.1 —— 宿主端 `dsh-host-webserver` 两份字节一致，`webServer` / `webRuntime` / `llm` 三个服务与 `ctx.llm.prepareCall` / 流式 `text-delta` / `finish.reason` 均无变化；客户端 `dsh-client-modules` / `dsh-client-ui-renderer` / `dsh-client-locale` / `dsh-client-ui-settings` 四份字节一致，插槽注册、`setDraft`、`useInput(s => s.draft)`、`[data-composer-card]` + contenteditable 的 DOM 形态全部不变。
 
 ## 开发 Dev
