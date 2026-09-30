@@ -3,6 +3,31 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.1] — 2026-09-30
+
+### Fixed
+
+- **客户端半被重新加载后，「语音输入」设置页会静默消失（MED，DSH 0.2.0 起可复现）**：`ctx.locale.register()` 的 disposer 被丢掉（回调里 `return () => {}`），而语言字典存在**长活的 locale 服务**里，只有那个 disposer 能释放它。于是第二次 `apply()` 必然抛 `locale namespace "settings.voiceScribe" already has locale "zh"`，被插件自己的 try/catch 吞成一句控制台警告——设置区不再注册，页面消失到整页刷新为止。这不是假想路径：DSH 在客户端 bundle 或客户端图变化时会**卸载并重新 apply** 客户端插件（`dsh-client-hmr` 推 `rebuilt` / `graph` 帧，插件管理器禁用→启用同理），所以覆盖安装一个新版本就会踩到。现在 locale 注册单独成一个 effect 并把 disposer 交回调用方 fiber（与 `dsh-client-ui-conversation` 的官方写法一致），且与设置区注册分开——即使后者抛错，命名空间仍可释放。
+
+### Changed
+
+- **peer 声明补全为「插件实际绑定的宿主服务」**：新增 `@deepseek-ai/dsh-host-webserver`（提供 `webServer`）与 `@deepseek-ai/dsh-web-app`（提供 `webRuntime`），与既有的 `@deepseek-ai/dsh-llm` 一样标 `optional` 并共用同一范围。此前只声明了 `dsh-llm`，一旦这两个服务改名或迁移，插件会被**静默 park**（工具与界面消失、且没有任何兼容提示）；现在会得到明确的兼容拒绝信息。
+- **peer 范围补上 `0.1.7-*` 与 `0.2.0-rc.*` 两条发行线**（`>=0.1.7-alpha.0 || >=0.2.0-rc.0`）：semver 的预发布规则要求逐条列出元组，范围此前停在 `0.1.6-alpha.0`，0.2.0 线的宿主会一直收到 unmet-peer 告警。
+- 客户端 bundle 头部注释里的旧路径 `/plugins/dsh-voice-input/client.js` 改为现名——该路由由**包名**派生，旧名是 0.1.0 那次「界面彻底打不开」的同型残留。
+
+### Tests
+
+- 201 → **202**：新增行为测试「客户端半重载后设置页仍在」。用最小 cordis 桩如实建模三条事实——`ctx.effect` 同步执行并 rethrow、`slots.register` / `slots.inject` 的清理挂**调用方** fiber、`locale.register` 只靠返回的 disposer 释放且重复注册会抛错——跑「apply → 卸载 fiber → 再 apply」。已验证该测试在 0.5.0 代码上**必红**（`the locale namespace must be released with the fiber that registered it`），在修复后转绿。
+- peer 范围的派生断言改为**逐个核对每一个声明的 peer**（门禁是「任一 peer 不匹配就整包拒绝」，所以单个 peer 的过期行等于整包失效），并把已发布版本表按 registry 重新读取（补上 `0.1.5-rc.3`、`0.1.6-alpha.2`、`0.1.7-*`、`0.2.0-rc.*`）。原清单停在 `0.1.6-alpha.1`，已经抓不到「范围停在旧线而 `latest` 前进到 0.2.0」这一类问题。
+
+### Compatibility
+
+- **逐项核对 DSH 0.2.0-rc.2**（桌面版运行时；npm `latest` / `next` 同版本，已无更新的可测）：
+  - peer 门禁 `semver.satisfies(runtime, range, { includePrerelease: true })`，用宿主自带 semver 7.8.5 实测 **SAT**；`^0.1.0-rc.7` / `~0.1.0-rc.6` 这类 caret/tilde 仍然 **UNSAT**（上界够不到下一个 minor），印证「跨版本线必须用 `>=` 开区间并列」。
+  - 宿主端：`webServer` / `webRuntime` / `llm` 三个服务名不变；`webServer.register({ kind: "prefix", path, handler })` 与 `req/res` 直持不变；`ctx.webRuntime.trustedHosts` 仍是官方 patch 自己在用的字段；`ctx.llm.prepareCall(config, signal)` + `prepared.stream()`、`text-delta`、`finish.reason.kind`（`aborted` / `error`）、`createUserMessage` 全部不变。0.2.0 新增 `callConfigEquals(options, resolvedConfig)` 硬校验，只比 provider/model/reasoningEffort/temperature/maxTokens/stop，本插件的 `{ ...prepared.config, messages, system, signal }` 形态放行。
+  - 客户端：`slots` / `locale` 服务名不变；`slots.inject` / `slots.register` / `locale:` 座位 / `inject` 工厂 / `children: { key: { kind, scope } }` 仍被支持；`conversation.input.right` 仍渲染且标准属性仍含 `useInput` + `inputActions`（仍**没有** `input`）；`settings.section` 的 `label` 仍支持 `() => string` thunk（`resolveSlotLabel`）；`dsh.client.platform: "web"` 正是桌面版请求的平台；`[data-composer-card]` + Lexical contenteditable 与 `inputActions.setDraft` 不变。
+  - 结论：**0.1.x → 0.2.0 无需功能性改动**，本次两条改为声明与生命周期修复。
+
 ## [0.5.0] — 2026-09-24
 
 ### Added

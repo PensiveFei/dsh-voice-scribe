@@ -135,7 +135,7 @@ DSH 从 0.1.7 起自带一个**实验性**的官方语音输入 —— `@deepsee
 
 **怎么选**：只要「点一下说话、点一下停」并希望**官方原生集成** → 用官方；需要**热键 / 按住说话、边说边上屏、热词纠正、AI 润色、云端多 provider 故障切换、自定义组合键** → 用本插件。
 
-**两者可以并存**：官方插件用它自己的 🎤 按钮，本插件用 Alt 热键和另一个 🎤 按钮（悬停提示会写明是哪个），互不冲突。
+**两者可以并存**：官方插件用它自己的 🎤 按钮，本插件用 Alt 热键和另一个 🎤 按钮（悬停提示会写明是哪个），互不冲突。在 0.2.0-rc.2 上逐项核对过：两者占**不同插槽**（官方 `conversation.input.activity`，本插件 `conversation.input.right`）、**不同 locale 命名空间**（`voice-input` vs `settings.voiceScribe`）、路由前缀也不重叠（官方走 `speech/*` API remotes，本插件的 `/voice-input` 无人占用），且**官方那套没有全局热键**。同时启用时输入框会出现两个麦克风按钮，SenseVoice 模型也会各存一份（官方 `~/.dsh/speech-to-text/sensevoice`，本插件 `~/.dsh/voice/sensevoice`）。
 
 ## 已知限制 Known limitations
 
@@ -144,12 +144,15 @@ DSH 从 0.1.7 起自带一个**实验性**的官方语音输入 —— `@deepsee
 
 ## 兼容性 Compatibility
 
-- 需要 **DSH 0.1.0-rc.6 及以上**；peer 范围显式列出每条已发布的预发布线（`0.1.1-rc` / `0.1.2-alpha` / `0.1.3-alpha` / `0.1.5-alpha` / `0.1.6-alpha`），semver 的预发布规则要求逐条列出元组，否则该线宿主会一直收到 unmet-peer 告警。
+- 需要 **DSH 0.1.0-rc.6 及以上**；peer 范围显式列出每条已发布的预发布线（`0.1.1-rc` / `0.1.2-alpha` / `0.1.3-alpha` / `0.1.5-alpha` / `0.1.6-alpha` / `0.1.7-alpha` / `0.2.0-rc`），semver 的预发布规则要求逐条列出元组，否则该线宿主会一直收到 unmet-peer 告警。
+- **声明了三个宿主 peer**（`@deepseek-ai/dsh-llm` / `@deepseek-ai/dsh-host-webserver` / `@deepseek-ai/dsh-web-app`，三者共用同一范围且都标 `optional`）：它们分别是 `llm`、`webServer`、`webRuntime` 三个服务的提供方。DSH 0.2.0 起 `dsh-app-boot` 会用 `semver.satisfies(runtime, range, { includePrerelease: true })` 逐个核对 peer，**任一不匹配就整包拒绝加载**；把这三个声明出来，它们将来改名或迁移时你会拿到明确的兼容拒绝信息，而不是插件静默失效。`optional` 只挡安装器（不会把一份并行核心树拖进你的 profile），不影响这道检查。
 - 输入框插槽 `conversation.input.right` 在 DSH **0.1.2** 起由 `<textarea>` 改为 Lexical `contenteditable`：0.4.8 起两种形态都支持（读取实时草稿走 `useInput`，写入走 `inputActions.setDraft`）。
 - 界面没有麦克风按钮（旧壳子没有该插槽）时，**Alt 热键仍然可用**。
 - **桌面端**：官方桌面应用是 Electron 外壳，跑的是与 web 同一套宿主与插件体系（`@deepseek-ai/dsh-desktop-host` 依赖 `dsh-app-boot` / `dsh-host-webserver` / `dsh-home-paths` / `dsh-client-connection`），**同一个插件包两端通用**。
 - **0.1.7-rc.2 核对**：`inputActions.setDraft()` 与 `useInput(s => s.draft)` 均未变化，插件不受影响；同版本新增 `captureInsertion()` / `insertText(text, span)`（按选区插入、一步可撤销、不覆盖引用芯片），适配排期见仓库待办。
 - **实测核对**：0.4.10 逐文件对照了 **DSH 0.1.5-rc.1** 与 0.1.2-rc.1 —— 宿主端 `dsh-host-webserver` 两份字节一致，`webServer` / `webRuntime` / `llm` 三个服务与 `ctx.llm.prepareCall` / 流式 `text-delta` / `finish.reason` 均无变化；客户端 `dsh-client-modules` / `dsh-client-ui-renderer` / `dsh-client-locale` / `dsh-client-ui-settings` 四份字节一致，插槽注册、`setDraft`、`useInput(s => s.draft)`、`[data-composer-card]` + contenteditable 的 DOM 形态全部不变。
+- **0.2.0-rc.2 核对（0.5.1）**：桌面版运行时与 npm `latest` / `next` 同为 **0.2.0-rc.2**。peer 门禁用宿主自带 semver 7.8.5 实测 **SAT**；宿主端 `webServer` / `webRuntime` / `llm` 三个服务名、`register({ kind: "prefix" })` 路由、`ctx.webRuntime.trustedHosts`、`prepareCall` 与流式 `text-delta` / `finish.reason` 全部不变（0.2.0 新增的 `callConfigEquals` 硬校验放行本插件的 `{ ...prepared.config, … }` 调用形态）；客户端 `slots` / `locale` 服务名、`conversation.input.right` 的 `useInput` + `inputActions`、`settings.section` 的 `label` thunk、`[data-composer-card]` + Lexical contenteditable 与 `inputActions.setDraft` 均未变——**0.1.x → 0.2.0 无需功能性改动**。
+- **重载语义（0.5.1 修复）**：DSH 在客户端 bundle 或客户端图变化时会**卸载并重新 apply** 客户端插件（`dsh-client-hmr` 的 `rebuilt` / `graph` 帧；插件管理器禁用→启用同理），所以插件必须把**注册到长活服务上的东西**（如 locale 命名空间）的 disposer 交回自己的 fiber，否则第二次 apply 会抛错、被兜底 catch 吞掉。
 
 ## 开发 Dev
 
