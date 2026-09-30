@@ -605,17 +605,22 @@ test('repo: the manifest cannot drag the DSH core tree into a plugin install', (
   //
   // The check is DERIVED from the real registry list instead of a hand-copied
   // line list: the hand-written version named five lines and still missed
-  // 0.1.6-alpha.1 — the current `alpha` dist-tag — so that whole generation of
-  // hosts silently got an unmet peer. Add new lines to `published` when DSH
-  // publishes them, and this test will demand them in the range.
-  const llm = pkg.peerDependencies['@deepseek-ai/dsh-llm'];
-  const PUBLISHED_DSH_LLM = [
+  // 0.1.6-alpha.1 — the `alpha` dist-tag of the day — so that whole generation
+  // of hosts silently got an unmet peer. The list below was re-read from
+  // `npm view @deepseek-ai/dsh-llm versions` on 2026-09-30 (floor = the
+  // plugin's own minimum, 0.1.0-rc.6): 0.1.5-rc.3, 0.1.6-alpha.2 and the whole
+  // 0.1.7 / 0.2.0 lines had been published since the previous revision, so the
+  // old list could no longer catch a range that stopped at 0.1.6-alpha.0 while
+  // `latest` had already moved on to 0.2.0-rc.2.
+  const PUBLISHED_DSH = [
     '0.1.0-rc.6', '0.1.0-rc.7', '0.1.0-rc.8',
     '0.1.1-rc.1', '0.1.1-rc.2',
     '0.1.2-alpha.2', '0.1.2-alpha.3', '0.1.2-alpha.4', '0.1.2-alpha.5', '0.1.2-rc.1',
     '0.1.3-alpha.2',
-    '0.1.5-alpha.1', '0.1.5-alpha.2', '0.1.5-rc.1', '0.1.5-rc.2',
-    '0.1.6-alpha.1'
+    '0.1.5-alpha.1', '0.1.5-alpha.2', '0.1.5-rc.1', '0.1.5-rc.2', '0.1.5-rc.3',
+    '0.1.6-alpha.1', '0.1.6-alpha.2',
+    '0.1.7-alpha.1', '0.1.7-alpha.2', '0.1.7-rc.1', '0.1.7-rc.2',
+    '0.2.0-rc.1', '0.2.0-rc.2'
   ];
   // Minimal semver precedence for the shapes DSH publishes (x.y.z[-pre]).
   const parseVer = (v) => {
@@ -642,28 +647,41 @@ test('repo: the manifest cannot drag the DSH core tree into a plugin install', (
     }
     return cmpPre(a.pre, b.pre);
   };
-  const floors = [];
-  for (const comparator of llm.split('||')) {
-    const m = comparator.trim().match(/^>=\s*(.+)$/);
-    assert.ok(m, 'unsupported comparator in the peer range: ' + comparator.trim());
-    const parsed = parseVer(m[1].trim());
-    assert.ok(parsed, 'unparsable version in the peer range: ' + m[1].trim());
-    // Only a comparator that itself carries a prerelease admits prereleases
-    // of its own tuple; a bare x.y.z floor admits that tuple too.
-    floors.push({ tuple: parsed.nums.join('.'), prerelease: parsed.pre.length > 0, parsed });
+  const uncoveredFor = (range) => {
+    const floors = [];
+    for (const comparator of range.split('||')) {
+      const m = comparator.trim().match(/^>=\s*(.+)$/);
+      assert.ok(m, 'unsupported comparator in the peer range: ' + comparator.trim());
+      const parsed = parseVer(m[1].trim());
+      assert.ok(parsed, 'unparsable version in the peer range: ' + m[1].trim());
+      // Only a comparator that itself carries a prerelease admits prereleases
+      // of its own tuple; a bare x.y.z floor admits that tuple too.
+      floors.push({ tuple: parsed.nums.join('.'), prerelease: parsed.pre.length > 0, parsed });
+    }
+    const uncovered = [];
+    for (const version of PUBLISHED_DSH) {
+      const v = parseVer(version);
+      const admitted = floors.some((f) => {
+        if (f.tuple !== v.nums.join('.')) return false;
+        if (v.pre.length > 0 && !f.prerelease) return false;
+        return cmpVer(v, f.parsed) >= 0;
+      });
+      if (!admitted) uncovered.push(version);
+    }
+    return uncovered;
+  };
+  // EVERY declared peer is checked, not just @deepseek-ai/dsh-llm: the runtime
+  // gate (dsh-app-boot `evaluatePluginCompatibility`) denies the WHOLE plugin
+  // when any single declared range misses, so one stale line in one peer is a
+  // plugin-wide outage rather than a warning. Peers were added for the two host
+  // services the plugin actually binds (webServer ← dsh-host-webserver,
+  // webRuntime ← dsh-web-app) so a future rename of either provider surfaces as
+  // an explicit compatibility denial instead of a silently parked plugin.
+  for (const [peerName, range] of Object.entries(pkg.peerDependencies)) {
+    const uncovered = uncoveredFor(range);
+    assert.deepStrictEqual(uncovered, [],
+      peerName + ': these hosts would get a permanent unmet-peer warning: ' + uncovered.join(', ') + ' — range: ' + range);
   }
-  const uncovered = [];
-  for (const version of PUBLISHED_DSH_LLM) {
-    const v = parseVer(version);
-    const admitted = floors.some((f) => {
-      if (f.tuple !== v.nums.join('.')) return false;
-      if (v.pre.length > 0 && !f.prerelease) return false;
-      return cmpVer(v, f.parsed) >= 0;
-    });
-    if (!admitted) uncovered.push(version);
-  }
-  assert.deepStrictEqual(uncovered, [],
-    'these hosts would get a permanent unmet-peer warning: ' + uncovered.join(', ') + ' — range: ' + llm);
 });
 
 test('repo: dsh.client names the current module-system package', () => {
@@ -2260,6 +2278,94 @@ function legacyComposerDom() {
   const window = { getSelection: () => null, addEventListener() {}, removeEventListener() {} };
   return { card, editor: textarea, textarea, document, window };
 }
+
+/**
+ * Minimal stand-in for the client cordis environment, built around the three
+ * facts that decide whether a SECOND apply() survives — the ones the 0.5.1
+ * locale-disposer fix turns on:
+ *   1. `ctx.effect(cb)` runs cb synchronously and rethrows, so a throwing setup
+ *      is swallowed by the plugin's own try/catch and merely warns;
+ *   2. `slots.inject` / `slots.register` hang their cleanup on the CALLING
+ *      fiber (DSH's documented contract), so a plugin reload drops the old
+ *      contributions by itself;
+ *   3. `locale.register` does NOT: the namespace lives in the long-lived locale
+ *      service, only the returned disposer releases it, and a second
+ *      registration of the same namespace+locale throws.
+ */
+function clientHostStub() {
+  const localeDicts = new Set();
+  const slots = [];
+  const locale = {
+    register(ns, dicts) {
+      const mine = Object.keys(dicts).map((id) => ns + ':' + id);
+      for (const key of mine) {
+        if (localeDicts.has(key)) {
+          throw new Error('locale namespace "' + ns + '" already has locale "' + key.slice(ns.length + 1) + '"');
+        }
+      }
+      for (const key of mine) localeDicts.add(key);
+      return () => { for (const key of mine) localeDicts.delete(key); };
+    },
+    bind: (ns) => (key) => ns + ':' + key
+  };
+  /** One plugin activation: everything effect-registered on it dies with it. */
+  const makeFiber = () => {
+    const own = [];
+    const ctx = {
+      effect(execute) {
+        const cleanup = execute();
+        let disposed = false;
+        const dispose = () => {
+          if (disposed) return;
+          disposed = true;
+          if (typeof cleanup === 'function') cleanup();
+        };
+        own.push(dispose);
+        return dispose;
+      },
+      slots: {
+        inject(key, callback) { return ctx.effect(callback); },
+        register(options, component) {
+          slots.push(options.name);
+          return ctx.effect(() => () => {
+            const i = slots.lastIndexOf(options.name);
+            if (i >= 0) slots.splice(i, 1);
+          });
+        }
+      },
+      locale,
+      on() {},
+      logger: { warn() {}, error() {} }
+    };
+    return { ctx, dispose: () => { for (const d of own.splice(0).reverse()) d(); } };
+  };
+  return { makeFiber, localeDicts, slots };
+}
+
+test('client(behaviour): a reloaded client half keeps its settings page', () => {
+  // DSH disposes and re-applies a client plugin whenever its bundle or the
+  // client graph changes (dsh-client-hmr pushes a `rebuilt`/`graph` frame and
+  // the runner tears the entry's fiber down — plugin-manager disable→enable is
+  // the same path). Before 0.5.1 the locale registration dropped its disposer,
+  // so the second apply() threw `locale namespace "settings.voiceScribe"
+  // already has locale "zh"`; the plugin's own catch turned that into a warning
+  // and the whole 语音输入 settings page vanished until a full page reload.
+  const host = clientHostStub();
+  const face = loadClientFace(modernComposerDom());
+  const first = host.makeFiber();
+  face.apply(first.ctx);
+  assert.ok(host.slots.includes('settings.section'), 'the first apply registers the settings section');
+  assert.ok(host.slots.includes('conversation.input.right'), 'and the composer microphone button');
+  assert.ok(host.localeDicts.has('settings.voiceScribe:zh'), 'and the locale namespace');
+  first.dispose();
+  assert.strictEqual(host.localeDicts.size, 0,
+    'the locale namespace must be released with the fiber that registered it');
+  assert.deepStrictEqual(host.slots, [], 'slot contributions drop with the fiber');
+  const second = host.makeFiber();
+  face.apply(second.ctx);
+  assert.ok(host.slots.includes('settings.section'), 'the settings section comes back after the reload');
+  assert.ok(host.localeDicts.has('settings.voiceScribe:zh'), 'and so does its dictionary');
+});
 
 test('client(behaviour): a preview never overwrites what the user typed mid-dictation', () => {
   const dom = modernComposerDom();
