@@ -45,6 +45,7 @@
     "security": "node scripts/security-check.cjs"
   },
   "dsh": {
+    "manifestVersion": "1",
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
