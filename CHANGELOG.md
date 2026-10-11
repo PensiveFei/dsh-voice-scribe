@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.2] — 2026-10-11
+
+**元数据版本，无运行时改动。** 客户端与 lib 代码逐字未变，安装后的行为与 0.5.1 完全一致；改的只是 `package.json` 里的声明。
+
+### Changed
+
+- **补声明 `dsh.manifestVersion: "1"`**：按 DSH 官方 *Public package manifest fields* 的定义，该字段标识**声明格式**版本，格式与兼容性声明**不由当前安装器/加载器强制**。写它只是为了格式合规。
+
+  ⚠️ **它不参与兼容判定。** 市场的 `manifestFacts()` 只读 `engines.dsh` 与 lockstep 的 `@deepseek-ai/dsh-*` host peer，不读 `manifestVersion`。已用市场自己的 `deriveHostCompatibility()` 实测：加与不加，判定结果完全一致。请勿把本版读作"兼容性有变化"。
+
+### Compatibility
+
+- 无破坏性变更；peer 范围未动（本就已覆盖 `0.2.0-rc.*`）。
+- 实测判定（`0.1.5-alpha.0` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-alpha.2`）：全部 `compatible`。
+
 ## [0.5.1] — 2026-09-30
 
 ### Fixed
