@@ -34,7 +34,7 @@ const utilsSrc = readSource(path.join('lib', 'host-utils.js'));
 // ---------- server-side: source shape (needs DSH host to mount) ----------
 test('host: exports name and inject', () => {
   assert.ok(/export const name = "dsh-voice-scribe"/.test(src));
-  assert.ok(/export const inject = \["webServer", "webRuntime", "llm"\]/.test(src));
+  assert.ok(/export const inject = \["webServer", "webStartup", "llm"\]/.test(src));
 });
 
 test('host: local-transcribe threads the request abort signal into the decoder', () => {
@@ -88,8 +88,63 @@ test('host: 413 overflow path is reachable (no hang, real response)', () => {
 });
 
 test('host: trustedHosts validated once at apply()', () => {
-  assert.ok(src.includes('buildTrustedHosts(ctx.webRuntime.trustedHosts'));
+  assert.ok(src.includes('buildTrustedHosts(ctx.webStartup.trustedHosts'));
   assert.ok(!/isTrustedApiRequest[\s\S]{0,200}assertTrustedAuthority/.test(src), 'no per-request assert in the handler path');
+});
+
+test('host: the removed webRuntime service is not required or read', () => {
+  // DSH 0.2.1-rc.1 deleted the `webRuntime` service: dsh-web-app now provides
+  // `webApp` ({ getAdvertisedUrl }) instead, and nothing carries `trustedHosts`
+  // under the old name. `inject` is a HARD gate in cordis — a name that is
+  // never provided parks the plugin in `pending` for the life of the process,
+  // so apply() never runs, /voice-input never registers (405 on POST, 404 on
+  // GET) and the client's local-status probe fails, which the settings page
+  // then renders as "model not downloaded" even with a complete model on disk.
+  // `webStartup` has been provided by dsh-web-app/startup since 0.1.0-rc.6, so
+  // it spans the whole declared peer range and is the service to depend on.
+  assert.ok(!/\bwebRuntime\b/.test(src.replace(/\/\*[\s\S]*?\*\//g, '')), 'webRuntime must not be injected or read');
+  assert.ok(!src.includes('ctx.webRuntime'), 'apply() must read ctx.webStartup');
+});
+
+testAsync('host: apply() mounts /voice-input off webStartup alone', async () => {
+  // Behavioural counterpart to the name check above: a host that provides
+  // webStartup and NOTHING named webRuntime must still get the route group
+  // registered. lib/index.js is dependency-free at module scope (the sherpa
+  // require lives inside the decoder), so importing it here is safe offline.
+  const { pathToFileURL } = require('url');
+  const mod = await import(pathToFileURL(path.join(ROOT, 'lib', 'index.js')).href);
+  assert.deepStrictEqual(mod.inject, ['webServer', 'webStartup', 'llm'], 'inject must not name a removed service');
+
+  const routes = [];
+  const ctx = {
+    webStartup: { trustedHosts: ['trusted.example:8443'] },
+    webServer: { register(route) { routes.push(route); return () => {}; } },
+    effect(fn) { return fn(); },
+  };
+  mod.apply(ctx);
+
+  assert.strictEqual(routes.length, 1, 'exactly one route group must be registered');
+  assert.strictEqual(routes[0].kind, 'prefix');
+  assert.strictEqual(routes[0].path, '/voice-input');
+
+  const call = async (headers) => {
+    const res = {
+      writableEnded: false,
+      destroyed: false,
+      writeHead(code) { this.status = code; return this; },
+      end(body) { this.body = body; },
+    };
+    // The fence answers 403 before handleApi() does any work, so a rejected
+    // request never touches settings, the model dir, or ctx.llm.
+    await routes[0].handler({ headers }, res);
+    return res;
+  };
+
+  const untrusted = await call({ host: 'evil.example' });
+  assert.strictEqual(untrusted.status, 403, 'an unlisted non-loopback authority must be refused');
+
+  const crossSite = await call({ host: '127.0.0.1:19387', 'sec-fetch-site': 'cross-site' });
+  assert.strictEqual(crossSite.status, 403, 'loopback still loses to a cross-site fetch');
 });
 
 test('host: set-settings validates asrUrl and trims values', () => {
@@ -673,10 +728,15 @@ test('repo: the manifest cannot drag the DSH core tree into a plugin install', (
   // EVERY declared peer is checked, not just @deepseek-ai/dsh-llm: the runtime
   // gate (dsh-app-boot `evaluatePluginCompatibility`) denies the WHOLE plugin
   // when any single declared range misses, so one stale line in one peer is a
-  // plugin-wide outage rather than a warning. Peers were added for the two host
-  // services the plugin actually binds (webServer ← dsh-host-webserver,
-  // webRuntime ← dsh-web-app) so a future rename of either provider surfaces as
-  // an explicit compatibility denial instead of a silently parked plugin.
+  // plugin-wide outage rather than a warning. Peers cover the packages behind
+  // the host services this plugin binds (webServer ← dsh-host-webserver,
+  // webStartup ← dsh-web-app).
+  //
+  // Caveat, learned the hard way in issue #8: these ranges are open-ended
+  // (`>=0.1.0-rc.6 || …`), so a package that keeps its NAME but drops a SERVICE
+  // still satisfies them — the gate cannot see service removal. It only proves
+  // the package is usable, not that the service exists; the inject list is
+  // therefore asserted by name in its own test above.
   for (const [peerName, range] of Object.entries(pkg.peerDependencies)) {
     const uncovered = uncoveredFor(range);
     assert.deepStrictEqual(uncovered, [],

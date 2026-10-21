@@ -145,7 +145,7 @@ DSH 从 0.1.7 起自带一个**实验性**的官方语音输入 —— `@deepsee
 ## 兼容性 Compatibility
 
 - 需要 **DSH 0.1.0-rc.6 及以上**；peer 范围显式列出每条已发布的预发布线（`0.1.1-rc` / `0.1.2-alpha` / `0.1.3-alpha` / `0.1.5-alpha` / `0.1.6-alpha` / `0.1.7-alpha` / `0.2.0-rc`），semver 的预发布规则要求逐条列出元组，否则该线宿主会一直收到 unmet-peer 告警。
-- **声明了三个宿主 peer**（`@deepseek-ai/dsh-llm` / `@deepseek-ai/dsh-host-webserver` / `@deepseek-ai/dsh-web-app`，三者共用同一范围且都标 `optional`）：它们分别是 `llm`、`webServer`、`webRuntime` 三个服务的提供方。DSH 0.2.0 起 `dsh-app-boot` 会用 `semver.satisfies(runtime, range, { includePrerelease: true })` 逐个核对 peer，**任一不匹配就整包拒绝加载**；把这三个声明出来，它们将来改名或迁移时你会拿到明确的兼容拒绝信息，而不是插件静默失效。`optional` 只挡安装器（不会把一份并行核心树拖进你的 profile），不影响这道检查。
+- **声明了三个宿主 peer**（`@deepseek-ai/dsh-llm` / `@deepseek-ai/dsh-host-webserver` / `@deepseek-ai/dsh-web-app`，三者共用同一范围且都标 `optional`）：它们分别是 `llm`、`webServer`、`webStartup` 三个服务的提供方。DSH 0.2.0 起 `dsh-app-boot` 会用 `semver.satisfies(runtime, range, { includePrerelease: true })` 逐个核对 peer，**任一不匹配就整包拒绝加载**；把这三个声明出来，包本身超出范围时你会拿到明确的兼容拒绝信息，而不是插件静默失效。但要注意：这道检查只核对**包**的版本范围，**看不到包里某个服务被改名或移除** —— DSH 0.2.1-rc.1 删掉 `webRuntime` 时 peer 范围依然满足，插件于是静默卡在 `pending`（issue #8）；本版起改为依赖 `webStartup`。`optional` 只挡安装器（不会把一份并行核心树拖进你的 profile），不影响这道检查。
 - 输入框插槽 `conversation.input.right` 在 DSH **0.1.2** 起由 `<textarea>` 改为 Lexical `contenteditable`：0.4.8 起两种形态都支持（读取实时草稿走 `useInput`，写入走 `inputActions.setDraft`）。
 - 界面没有麦克风按钮（旧壳子没有该插槽）时，**Alt 热键仍然可用**。
 - **桌面端**：官方桌面应用是 Electron 外壳，跑的是与 web 同一套宿主与插件体系（`@deepseek-ai/dsh-desktop-host` 依赖 `dsh-app-boot` / `dsh-host-webserver` / `dsh-home-paths` / `dsh-client-connection`），**同一个插件包两端通用**。

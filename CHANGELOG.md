@@ -3,6 +3,29 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.3] — 2026-10-21
+
+### Fixed
+
+- **DSH 0.2.1 起 host 端永久 `pending`，语音输入整条链路不可用（HIGH，issue #8）**：`inject` 声明了 `webRuntime`，而 DSH **0.2.1-rc.1 已把这个服务删掉** —— `dsh-web-app` 现在 provide 的是 `webApp`（只有 `getAdvertisedUrl`），不再有任何服务携带 `trustedHosts`。cordis 的 `inject` 是硬门禁：服务永不到场，host 半就永远停在 `pending (waiting for service: webRuntime)`，`apply()` 不执行、`/voice-input` 不注册（`POST` 405 / `GET` 404），前端 `local-status` 拿不到结果，设置页于是把**磁盘上已经完整存在**的模型显示成「未下载」。现改依赖 `webStartup`（`@deepseek-ai/dsh-web-app/startup` 提供，`trustedHosts` 同名同义），该服务从 **0.1.0-rc.6**（本包声明的最低支持版本）一路到 0.2.1-rc.2 都在，整个支持区间一次覆盖，不需要按版本分支。
+
+  ⚠️ **peer 门禁抓不到这一类问题。** 0.2.1-rc.1 删服务时，`dsh-app-boot` 的 `semver.satisfies()` 仍判定 SAT —— 范围是 `>=` 开区间，包名没变。于是插件是「通过门禁后静默卡死」，而不是拿到明确的兼容拒绝。能暴露它的只有 inject 里的服务名本身，所以本版补了名字断言。
+
+  ⚠️ **非 loopback 访问的信任语义变紧（已知且有意）。** 0.1.x–0.2.0 的 `webRuntime.trustedHosts` 是 `[...局域网地址, ...--trusted-host]`，`webStartup.trustedHosts` 只含显式的 `--trusted-host`。本机 `127.0.0.1` 走 loopback 短路，不受影响；靠局域网 IP 访问 DSH 的用户需要显式传 `--trusted-host`，这与 0.2.1 上游自身的模型一致。
+
+### Tests
+
+- 202 → **204**。新增两条针对这一类失效的回归：
+  - 「被移除的 `webRuntime` 不得出现在 `inject` 或 `apply()` 里」（源码断言，挡住改回去）；
+  - 「宿主只提供 `webStartup` 时 `apply()` 仍能挂载 `/voice-input`」（行为级：真跑 `apply()`，喂一个**没有** `webRuntime` 的假 ctx，断言路由注册成功且信任栅栏仍按新名单拒绝 403）。
+- 修正 peer 派生测试里一条**已被现实证伪**的注释：原文写 peer 范围能让「提供方改名时拿到明确的兼容拒绝信息」。实际没有 —— 0.2.1 删服务时范围照样满足、插件静默 park。现在写明这道检查只核对**包的版本范围**，看不到包内某个服务被移除。
+
+### Compatibility
+
+- 逐版本核对 `@deepseek-ai/dsh-web-app`：`webRuntime` 在 `0.1.0-rc.6` / `0.1.7-rc.2` / `0.2.0-rc.1` 存在，**`0.2.1-rc.1` 起删除**；`webStartup` 自 `0.1.0-rc.6` 起全程存在。
+- `0.2.1-rc.2` 实际包核对：`webServer` 服务名、`register({ kind: "prefix" })` 路由接口、`webStartup.trustedHosts` 字段均未变，因此本次只改服务依赖，无其他功能性改动。
+- peer 范围未动。
+
 ## [0.5.2] — 2026-10-11
 
 **元数据版本，无运行时改动。** 客户端与 lib 代码逐字未变，安装后的行为与 0.5.1 完全一致；改的只是 `package.json` 里的声明。
