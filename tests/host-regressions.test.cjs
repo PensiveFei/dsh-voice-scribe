@@ -296,3 +296,30 @@ test('hotword worker concurrency is bounded and excess requests retain their tex
   controller.abort();
   assert.deepEqual(await within(Promise.all(pending)), Array(4).fill(original));
 });
+
+test('the catch-all API logger never serializes upstream exception content', async (t) => {
+  const secret = 'not-a-real-provider-credential';
+  const logs = [];
+  t.mock.method(console, 'error', (...args) => logs.push(args));
+  let handler;
+  host.apply({
+    webStartup: { trustedHosts: [] },
+    webServer: { register(def) { handler = def.handler; return () => {}; } },
+    effect(callback) { callback(); },
+    llm: { listProviders() { throw new Error(secret); } }
+  });
+  const req = Object.assign(new PassThrough(), {
+    method: 'POST', headers: { host: 'localhost', 'content-type': 'application/json' }
+  });
+  const res = Object.assign(new EventEmitter(), {
+    setHeader() {}, writeHead(status) { this.status = status; },
+    end(body) { this.body = JSON.parse(body); this.writableEnded = true; }
+  });
+  const done = handler(req, res);
+  req.end('{"action":"list-models"}');
+  await done;
+  assert.equal(res.status, 500);
+  assert.equal(res.body.error.message, 'internal error');
+  assert.ok(logs.length > 0);
+  assert.ok(!JSON.stringify(logs).includes(secret));
+});

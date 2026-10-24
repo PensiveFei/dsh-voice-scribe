@@ -22,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - 发布包只构建一次，上传 Actions 产物并直接发布同一 tarball，便于核对 GitHub / npm 字节。
 - CI 覆盖 Linux Node 18/20/22/24 与 Windows Node 24；新增独立行为回归文件，保留已有 204 项检查。
-- 本地 Windows 验证：原有 204 项通过，新增 57 项中 56 项通过、1 项 POSIX 权限检查按平台跳过；lint/security 与依赖审计通过。
+- 本地 Windows 验证：原有 204 项通过，新增 58 项中 57 项通过、1 项 POSIX 权限检查按平台跳过；lint/security 与依赖审计通过。
 - 模型固定为上游 revision `2365baeacb507f821a0c8120fcee3d484dba7a07`：model 239,233,841 B、tokens 315,894 B。已缓存文件通过准确尺寸检查，新下载再校验 SHA-256。
 - 详细问题和测试边界见 [2026-10-24 检查记录](docs/review-2026-10-24.md)。
 
