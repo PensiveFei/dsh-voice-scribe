@@ -60,7 +60,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-${{ inputs.publish_ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -86,42 +86,27 @@ jobs:
           node --version
           NPMV=$(npm --version)
           echo "npm $NPMV"
-          MAJOR=${NPMV%%.*}
-          MINOR=${NPMV#*.}
-          MINOR=${MINOR%%.*}
-          if [ "$MAJOR" -lt 11 ] || { [ "$MAJOR" -eq 11 ] && [ "$MINOR" -lt 5 ]; }; then
-            echo "::error::npm $NPMV is below 11.5.1 -- Trusted Publishing needs 11.5.1+"
-            exit 1
-          fi
+          node -e 'const v = process.argv[1].split(".").map(Number); if (v[0] < 11 || (v[0] === 11 && (v[1] < 5 || (v[1] === 5 && v[2] < 1)))) { console.error("npm 11.5.1+ required"); process.exit(1); }' "$NPMV"
 
       - name: Guard package.json version against the ref
         env:
-          PUBLISH_REF: ${{ inputs.publish_ref }}
+          PUBLISH_REF: ${{ inputs.publish_ref || github.ref }}
         run: |
           PKG=$(node -p "require('./package.json').version")
           case "$PUBLISH_REF" in
-            refs/tags/*) REF="${PUBLISH_REF#refs/tags/}" ;;
-            "")          REF="${GITHUB_REF_NAME}" ;;
-            *)           REF="${PUBLISH_REF##*/}" ;;
-          esac
-          echo "package.json=$PKG  ref=$REF"
-          case "$REF" in
-            v*)
-              TAG="${REF#v}"
-              if [ "$PKG" != "$TAG" ]; then
-                echo "::error::package.json version ($PKG) does not match tag ($REF)"
-                exit 1
-              fi
-              echo "OK: version and tag agree"
-              ;;
+            refs/tags/v*) REF="${PUBLISH_REF#refs/tags/}" ;;
             *)
-              # A branch ref publishes whatever that branch happens to contain
-              # under its own package.json version — main is normally AHEAD of
-              # the last tag, so those bytes would match no tag at all.
-              echo "::error::refusing to publish from a non-tag ref ($REF) -- pass publish_ref=refs/tags/vX.Y.Z"
+              echo "::error::refusing to publish from a non-tag ref -- pass publish_ref=refs/tags/vX.Y.Z"
               exit 1
               ;;
           esac
+          echo "package.json=$PKG  ref=$REF"
+          if [ "$PKG" != "${REF#v}" ]; then
+            echo "::error::package.json version ($PKG) does not match tag ($REF)"
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$PUBLISH_REF^{commit}")"
+          echo "OK: version and checked-out tag agree"
 
       # 两条触发并存后，「推 tag」和「建 Release」会对同一个版本各跑一次。
       # 已发布不是错误，只是无事可做 —— 跳过发布步骤并留一条 warning，
@@ -142,17 +127,57 @@ jobs:
       - name: Release gate (tests, lint, security scan)
         if: steps.published.outputs.state == 'new'
         run: |
+          npm ci --ignore-scripts --omit=optional
           npm test
           npm run lint
           npm run security
 
+      - name: Build the release tarball once
+        if: steps.published.outputs.state == 'new'
+        id: pack
+        run: |
+          npm pack --json > pack.json
+          echo "file=$(node -p "require('./pack.json')[0].filename")" >> "$GITHUB_OUTPUT"
+
+      - name: Save the exact publish artifact
+        if: steps.published.outputs.state == 'new'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: ${{ steps.pack.outputs.file }}
+          if-no-files-found: error
+
       # 不带 token、不带 --provenance：Trusted Publishing 会自动生成 provenance。
       - name: Publish to npm (OIDC, no token)
         if: steps.published.outputs.state == 'new'
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          TARBALL: ${{ steps.pack.outputs.file }}
         run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "$DRY_RUN" = "true" ]; then
             echo "dry-run: 只演练，不上传"
-            npm publish --access public --dry-run
+            npm publish "$TARBALL" --access public --dry-run
           else
-            npm publish --access public
+            set +e
+            npm publish "$TARBALL" --access public 2>&1 | tee "$RUNNER_TEMP/npm-publish.log"
+            STATUS=${PIPESTATUS[0]}
+            set -e
+            if [ "$STATUS" -ne 0 ]; then
+              # A release event can follow the tag before registry propagation.
+              # A conflict only counts as success when identical bytes become visible.
+              if ! grep -Eiq 'EPUBLISHCONFLICT|E409|previously (published|staged) version' "$RUNNER_TEMP/npm-publish.log"; then
+                exit "$STATUS"
+              fi
+              NAME=$(node -p "require('./package.json').name")
+              VER=$(node -p "require('./package.json').version")
+              EXPECTED=$(node -e 'const fs=require("node:fs"),c=require("node:crypto"); console.log("sha512-"+c.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"));' "$TARBALL")
+              MATCH=false
+              for DELAY in 2 4 8 16 30 30; do
+                ACTUAL=$(npm view "$NAME@$VER" dist.integrity 2>/dev/null || true)
+                if [ "$ACTUAL" = "$EXPECTED" ]; then MATCH=true; break; fi
+                sleep "$DELAY"
+              done
+              if [ "$MATCH" != true ]; then exit "$STATUS"; fi
+              echo "::warning::$NAME@$VER was already published with identical bytes"
+            fi
           fi

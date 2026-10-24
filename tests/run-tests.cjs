@@ -11,6 +11,17 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
+// Explicitly tiny, unhashed artifacts for mocked downloads only. Production
+// defaults still require the pinned model's real sizes and SHA-256 hashes.
+const TINY_DOWNLOADS = { files: {
+  'tokens.txt': { minBytes: 2, maxBytes: 262144 },
+  'model.int8.onnx': { minBytes: 2, maxBytes: 262144 }
+} };
+
+function sparseFile(filename, size) {
+  const descriptor = fs.openSync(filename, 'w');
+  try { fs.ftruncateSync(descriptor, size); } finally { fs.closeSync(descriptor); }
+}
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -83,7 +94,7 @@ test('host: 413 overflow path is reachable (no hang, real response)', () => {
   assert.ok(src.includes('payload === PAYLOAD_TOO_LARGE'));
   assert.ok(src.includes('writeJson(res, 413'));
   assert.ok(src.includes('res.setHeader("connection", "close")'));
-  assert.ok(utilsSrc.includes('resolve(PAYLOAD_TOO_LARGE)'));
+  assert.ok(utilsSrc.includes('finish(PAYLOAD_TOO_LARGE)'));
   assert.ok(!utilsSrc.includes('req.destroy()'), 'must not destroy the stream before the 413 is sent');
 });
 
@@ -175,12 +186,10 @@ test('host: trust fence blocks cross-site (in host-utils)', () => {
 });
 
 test('host: hot-word table applies to cloud and local transcription', () => {
-  assert.ok(src.includes('applyHotwords(text, loadHotwords().rules)'));
-  // Both transcription paths (cloud + local) wrap their result with hot words.
-  const transcribeBlock = src.match(/action === "transcribe"[\s\S]*?return;/) || [''];
-  assert.ok(transcribeBlock[0].includes('applyHotwords'), 'cloud transcribe must apply hot words');
-  const localBlock = src.match(/action === "local-transcribe"[\s\S]{0,900}applyHotwords/) || [''];
-  assert.ok(localBlock.length > 0, 'local transcribe must apply hot words');
+  // Both API routes must await bounded matching and pass request cancellation.
+  // Avoid the old [''] fallback whose length made the local assertion vacuous.
+  const calls = src.match(/await applyHotwordsBounded\(text, loadHotwords\(\)\.rules, abort\.signal\)/g) || [];
+  assert.strictEqual(calls.length, 2, 'both cloud and local routes must apply bounded hot words');
 });
 
 test('host: get-settings exposes polishPrompt and hot-word status (no content)', () => {
@@ -364,7 +373,7 @@ test('client: transcribe surfaces the host error message', () => {
 test('client: interim results enabled + interim fallback on stop', () => {
   assert.ok(clientSrc.includes('recognition.interimResults = true'));
   assert.ok(clientSrc.includes('wsLastInterim'));
-  assert.ok(clientSrc.includes('text = (wsLastInterim || "").trim()'));
+  assert.ok(clientSrc.includes('const text = appendSpeechSegment(wsFinalText, wsLastInterim).trim()'));
 });
 
 test('client: stop shows immediate processing feedback', () => {
@@ -388,7 +397,7 @@ test('client: polish never rejects and keeps raw transcript on failure', () => {
   // Regression for the "✨ 润色中… stuck forever + unhandled rejection" bug:
   // polish() must swallow host/network errors and only accept a real string.
   assert.ok(/async function polish[\s\S]{0,400}catch \{/.test(clientSrc));
-  assert.ok(clientSrc.includes('return data && data.ok === true && typeof data.text === "string" ? data.text : text;'));
+  assert.ok(clientSrc.includes('return data && data.ok === true && typeof data.text === "string" && data.text.trim() !== "" ? data.text : text;'));
 });
 
 test('client: finishWebSpeech has a defensive catch on polish', () => {
@@ -524,8 +533,8 @@ test('client: the composer editor resolves to a contenteditable (DSH 0.1.2+)', (
 
 test('client: web speech streams interim results into the composer in realtime', () => {
   assert.ok(clientSrc.includes('wsDraftBase'));
-  assert.ok(clientSrc.includes('writePreviewSpan(wsDraftBase + sep + wsLastInterim)'));
-  assert.ok(clientSrc.includes('interimChanged'));
+  assert.ok(clientSrc.includes('writePreviewSpan(wsDraftBase + sep + hypothesis)'));
+  assert.ok(clientSrc.includes('const hypothesis = appendSpeechSegment(wsFinalText, wsLastInterim)'));
 });
 
 test('client: local engine realtime preview (3s cadence) while recording', () => {
@@ -597,7 +606,9 @@ test('client: recording level meter (Web Audio analyser) with full teardown', ()
   assert.ok(finishBlock[0].includes('stopLevelMeter()'), 'finishRecording must stop the meter');
   const stopBlock = clientSrc.match(/function stopRecording\(\)[\s\S]*?recorder\.stop\(\);[\s\S]*?\} catch \{[\s\S]*?\n\t+\}/) || [''];
   assert.ok(stopBlock[0].includes('stopLevelMeter()'), 'stopRecording catch path must stop the meter');
-  assert.ok(/catch \{[\s\S]{0,80}stopLevelMeter\(\);/.test(clientSrc), 'startLevelMeter failure must clean up, never break recording');
+  const meterStart = clientSrc.indexOf('function startLevelMeter(');
+  const meterBlock = clientSrc.slice(meterStart, clientSrc.indexOf('function stopLevelMeter(', meterStart));
+  assert.ok(/catch \{[\s\S]*stopLevelMeter\(\);/.test(meterBlock), 'startLevelMeter failure must clean up, never break recording');
 });
 
 test('client: settings UI for trigger mode, hot words and polish prompt', () => {
@@ -902,7 +913,7 @@ async function behavioural() {
     globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'invalid api key' } }) });
     try {
       await assert.rejects(
-        utils.transcribeAudio({ audioBase64: 'YQ==', mimeType: 'audio/webm', language: '', settings: { asrApiKey: 'k' } }),
+        utils.transcribeAudio({ audioBase64: 'YQ==', mimeType: 'audio/webm', language: '', settings: { asrApiKey: 'not-a-real-test-credential' } }),
         (err) => err.code === 'asr-http' && /invalid api key/.test(err.message)
       );
     } finally {
@@ -1171,7 +1182,7 @@ async function behavioural() {
     assert.strictEqual(called, false, 'prepareCall must not run for over-long text');
   });
 
-  await testAsync('host: polishText forwards an already-aborted client signal to the stream', async () => {
+  await testAsync('host: polishText skips work for an already-aborted client', async () => {
     ensureLlmStub();
     const ac = new AbortController();
     ac.abort();
@@ -1182,8 +1193,8 @@ async function behavioural() {
       yield { type: 'finish', reason: { kind: 'stop' } };
     } }) } };
     const out = await host.polishText({ text: 'raw', provider: 'p', model: 'm', ctx, signal: ac.signal });
-    assert.strictEqual(streamSignalAborted, true, 'the stream must see an aborted signal for a client that is already gone');
-    assert.strictEqual(out, 'hello');
+    assert.strictEqual(streamSignalAborted, null, 'the stream must not start for a client that is already gone');
+    assert.strictEqual(out, 'raw');
   });
 
   await testAsync('host: polishText ignores non-text-delta and non-string chunks', async () => {
@@ -1391,8 +1402,9 @@ async function behavioural() {
     for (let i = 0; i < src.length; i++) assert.ok(Math.abs(out[i] - src[i]) < 1e-6);
     assert.strictEqual(local.base64ToFloat32('').length, 0);
     assert.strictEqual(local.base64ToFloat32(null).length, 0);
-    // trailing partial sample (3 bytes) is truncated, not crashed
-    assert.strictEqual(local.base64ToFloat32(Buffer.from([1, 2, 3]).toString('base64')).length, 0);
+    // A partial sample is malformed audio; silently dropping bytes hid errors.
+    assert.throws(() => local.base64ToFloat32(Buffer.from([1, 2, 3]).toString('base64')),
+      (error) => error.code === 'invalid-audio');
   });
 
   test('local-asr: modelDir honours DSH_HOME', () => {
@@ -1425,7 +1437,7 @@ async function behavioural() {
     // OfflineRecognizer — the ~230 MB model was loaded into memory TWICE.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-rec-'));
     // Fixtures must clear the plausibility floor in modelReady().
-    fs.writeFileSync(path.join(dir, 'model.int8.onnx'), Buffer.alloc(local.MIN_MODEL_BYTES));
+    sparseFile(path.join(dir, 'model.int8.onnx'), local.MIN_MODEL_BYTES);
     fs.writeFileSync(path.join(dir, 'tokens.txt'), 'a b c'.padEnd(local.MIN_TOKENS_BYTES, ' '));
     local.disposeRecognizer();
     let loads = 0;
@@ -1450,7 +1462,7 @@ async function behavioural() {
   await testAsync('local-asr: failed recognizer load clears the memo so retry works', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-rec-fail-'));
     // Fixtures must clear the plausibility floor in modelReady().
-    fs.writeFileSync(path.join(dir, 'model.int8.onnx'), Buffer.alloc(local.MIN_MODEL_BYTES));
+    sparseFile(path.join(dir, 'model.int8.onnx'), local.MIN_MODEL_BYTES);
     fs.writeFileSync(path.join(dir, 'tokens.txt'), 'a b c'.padEnd(local.MIN_TOKENS_BYTES, ' '));
     local.disposeRecognizer();
     let loads = 0;
@@ -1510,7 +1522,7 @@ async function behavioural() {
       };
     };
     try {
-      await local.startModelDownload(dir, [GOOD]);
+      await local.startModelDownload(dir, [GOOD], TINY_DOWNLOADS);
       for (let i = 0; i < 200 && local.getDownloadState().running; i++) {
         await new Promise((r) => setTimeout(r, 50));
       }
@@ -1566,7 +1578,7 @@ async function behavioural() {
       }
     });
     try {
-      await local.startModelDownload(dir, ['http://stub-mirror.invalid']);
+      await local.startModelDownload(dir, ['http://stub-mirror.invalid'], TINY_DOWNLOADS);
       for (let i = 0; i < 200 && local.getDownloadState().running; i++) {
         await new Promise((r) => setTimeout(r, 50));
       }
@@ -1609,8 +1621,8 @@ async function behavioural() {
       // Two callers (two browser tabs, or the settings page racing the hotkey)
       // reach local-download before the first one's readiness probe resolves.
       // Both used to pass the running guard and interleave into the same .part.
-      const first = local.startModelDownload(dir, ['http://race.invalid']);
-      const second = local.startModelDownload(dir, ['http://race.invalid']);
+      const first = local.startModelDownload(dir, ['http://race.invalid'], TINY_DOWNLOADS);
+      const second = local.startModelDownload(dir, ['http://race.invalid'], TINY_DOWNLOADS);
       const [a, b] = await Promise.all([first, second]);
       assert.strictEqual([a, b].filter((r) => r.started).length, 1,
         'exactly one caller may start the transfer');
@@ -1684,7 +1696,7 @@ async function behavioural() {
     };
     try {
       const mirrors = [BAD, GOOD];
-      const start = await local.startModelDownload(dir, mirrors);
+      const start = await local.startModelDownload(dir, mirrors, TINY_DOWNLOADS);
       assert.strictEqual(start.ok, true);
       assert.strictEqual(start.started, true);
       for (let i = 0; i < 200 && local.getDownloadState().running; i++) {
@@ -1983,7 +1995,7 @@ async function behavioural() {
     const realFetch = global.fetch;
     global.fetch = async () => new Response(new Uint8Array([1, 2, 3]), { status: 200 });
     try {
-      const started = await asr.startModelDownload(tmp, ['https://mirror.invalid/a']);
+      const started = await asr.startModelDownload(tmp, ['https://mirror.invalid/a'], TINY_DOWNLOADS);
       assert.strictEqual(started.ok, true);
       for (let i = 0; i < 200 && asr.getDownloadState().running; i++) {
         await new Promise((r) => setTimeout(r, 25));
@@ -2117,7 +2129,7 @@ async function behavioural() {
     // watchdog the pill sat on "处理中…" and every later Alt tap re-entered
     // the same dead stop() until the page was reloaded.
     assert.ok(/const WS_STOP_WATCHDOG_MS = 12_000;/.test(clientSrc));
-    assert.ok(/wsStopWatchdog = setTimeout\(\(\) => \{[\s\S]{0,220}finishWebSpeech\(\);/.test(clientSrc));
+    assert.ok(/wsStopWatchdog = setTimeout\(\(\) => \{[\s\S]{0,400}finishRecognition\(\);/.test(clientSrc));
     assert.ok(/wsStopWatchdog !== null\) \{ clearTimeout\(wsStopWatchdog\); wsStopWatchdog = null; \}/.test(clientSrc),
       'onend must clear the watchdog');
   });
@@ -2126,8 +2138,12 @@ async function behavioural() {
     // Alt+Tab starts the recording on the Alt keydown, then the window
     // blurs — the mic must not stay hot and no text may be inserted.
     assert.ok(/let discardWsOnEnd = false;/.test(clientSrc) && /let discardOnStop = false;/.test(clientSrc));
-    assert.ok(/function onWindowBlur\(\)[\s\S]{0,420}stopWebSpeech\(\);/.test(clientSrc));
-    assert.ok(/function onWindowBlur\(\)[\s\S]{0,560}stopRecording\(\);/.test(clientSrc));
+    // Slice the actual handler rather than counting comment/whitespace bytes;
+    // behavioral regressions cover cancellation and the watchdog path too.
+    const blurStart = clientSrc.indexOf('function onWindowBlur()');
+    const blurBlock = clientSrc.slice(blurStart, clientSrc.indexOf('function mountHotkey(', blurStart));
+    assert.ok(blurBlock.includes('stopWebSpeech();'));
+    assert.ok(blurBlock.includes('stopRecording();'));
   });
 
   test('client: tap-mode start clears a stale holdStopPending', () => {
@@ -2185,7 +2201,7 @@ test('client: a blur while getUserMedia is pending cancels the recording', () =>
   // background: the mic stayed hot and nothing stopped it.
   assert.ok(clientSrc.includes('let cancelPendingStart = false;'));
   assert.ok(/if \(startPending\) \{[\s\S]{0,120}cancelPendingStart = true;/.test(clientSrc));
-  assert.ok(/if \(cancelPendingStart\) \{[\s\S]{0,260}track.stop\(\)/.test(clientSrc));
+  assert.ok(/if \(cancelPendingStart \|\| lifecycle !== clientLifecycle\) \{[\s\S]{0,260}track.stop\(\)/.test(clientSrc));
 });
 
 test('client: the decode AudioContext is closed on every path', () => {
