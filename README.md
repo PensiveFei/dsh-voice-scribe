@@ -166,6 +166,8 @@ DSH 从 0.1.7 起自带一个**实验性**的官方语音输入 —— `@deepsee
 
 0.5.4 的问题、修复、验证边界和后续优化见 [代码检查记录](docs/review-2026-10-24.md)。
 
+环境准备、测试、提交与发布流程见 [贡献指南](CONTRIBUTING.md)。感谢代码与非代码贡献者，具体贡献和来源见 [CONTRIBUTORS.md](CONTRIBUTORS.md)；每次 Release 保留逐项归属。
+
 ```bash
 npm test          # 测试
 npm run lint      # 语法检查

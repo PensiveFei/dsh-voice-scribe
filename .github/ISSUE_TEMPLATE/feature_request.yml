@@ -1,0 +1,59 @@
+name: 功能建议 / Feature request
+description: 描述具体场景、版本环境、期望行为与可验证的例子
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎说明实际需求。请先搜索已有 Issue，并阅读 [贡献指南](https://github.com/PensiveFei/dsh-voice-scribe/blob/main/CONTRIBUTING.md)。安全漏洞按 [SECURITY.md](https://github.com/PensiveFei/dsh-voice-scribe/blob/main/SECURITY.md) 报告，不要公开凭据或私人音频。
+  - type: input
+    id: version
+    attributes:
+      label: 插件版本或 commit / Plugin version
+      description: 未安装时写“未安装”，并说明评估依据；已安装请写安装方式。
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 系统与运行环境 / Environment
+      description: OS 版本/架构、DSH、Node.js、浏览器版本、web/desktop、识别引擎；不适用时写明原因。
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 问题场景与重现步骤 / Scenario and steps
+      description: 说明谁在什么操作后遇到什么限制，给出最小操作步骤；纯新能力可给输入/输出示例。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望行为与替代方案 / Proposal and alternatives
+      description: 希望怎样工作？目前如何绕过？涉及引擎、热键、热词、润色或 UI 的哪一部分？
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏日志或样例 / Sanitized logs or example
+      description: 给出有助于理解需求的最小日志或自制样例；不涉及日志时写“不适用”及原因。
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: redaction
+    attributes:
+      label: 脱敏说明 / Redaction report
+      description: 说明已替换的敏感类别；无敏感字段时写“人工检查后未发现”。不要提供原值。
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认 / Before submitting
+      options:
+        - label: 已搜索现有 Issue，正文、日志和附件已人工脱敏，不含凭据、私人音频/转写或个人信息。
+          required: true
