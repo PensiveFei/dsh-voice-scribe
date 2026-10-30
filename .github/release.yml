@@ -1,0 +1,13 @@
+# GitHub "Generate release notes" 的分类配置；报告者等非 PR 作者仍需按 RELEASE_TEMPLATE.md 手工补齐。
+changelog:
+  categories:
+    - title: Features / 新功能
+      labels: [enhancement]
+    - title: Fixes / 修复
+      labels: [bug]
+    - title: Dependencies / 依赖
+      labels: [dependencies]
+    - title: Documentation / 文档
+      labels: [documentation]
+    - title: Other changes / 其他变化
+      labels: ["*"]

@@ -1,0 +1,77 @@
+name: 缺陷报告 / Bug report
+description: 提供版本、环境、复现步骤与已脱敏日志
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索已有 Issue。涉及可利用漏洞、密钥或隐私外泄时，按 [SECURITY.md](https://github.com/PensiveFei/dsh-voice-scribe/blob/main/SECURITY.md) 走私有报告，不要公开真实凭据或音频。
+        无日志或某项不适用时请说明原因；请勿上传完整 profile、HAR、设置文件或私人转写。
+  - type: input
+    id: version
+    attributes:
+      label: 插件版本或 commit / Plugin version
+      placeholder: 版本号或完整 commit SHA，同时写明 npm / GitHub / 本地包安装方式
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 系统与运行环境 / Environment
+      description: 写明 OS 版本和架构、Node.js、DSH 版本、web/desktop、浏览器及版本。未使用的项写明不适用。
+      placeholder: |
+        OS / 架构：
+        Node.js / npm：
+        DSH / profile 类型：
+        浏览器：
+    validations:
+      required: true
+  - type: textarea
+    id: engine
+    attributes:
+      label: 引擎与相关设置 / Engine and settings
+      description: 自动/本地离线/Web Speech/云端 ASR，语言、触发方式、设备类型及润色是否开启。云端仅给供应商/协议，不给凭据或私人端点。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最短复现步骤 / Steps to reproduce
+      description: 用自制、无隐私样本描述从启动/安装到问题发生的步骤，含发生频率。
+      placeholder: |
+        1. 操作
+        2. 输入
+        3. 观察结果
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 预期与实际结果 / Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏日志或诊断报告 / Sanitized logs
+      description: 贴最小相关的浏览器/宿主错误、时间顺序、状态码；无法获取时写“无日志”及原因。不要粘贴原始音频、真实转写、设备 ID 或密钥。
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: redaction
+    attributes:
+      label: 脱敏说明 / Redaction report
+      description: 列出已替换的敏感类别（如用户名、路径、token、设备标识）；无敏感字段时写“人工检查后未发现”。不要提供替换前的值。
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认 / Before submitting
+      options:
+        - label: 已搜索现有 Issue，并阅读 CONTRIBUTING.md 和 SECURITY.md。
+          required: true
+        - label: 已人工检查正文、日志和附件，移除凭据、私人音频/转写、个人标识及绝对路径。
+          required: true
